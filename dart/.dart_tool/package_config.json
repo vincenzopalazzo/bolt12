@@ -1,0 +1,14 @@
+{
+  "configVersion": 2,
+  "packages": [
+    {
+      "name": "bolt12.dart",
+      "rootUri": "../",
+      "packageUri": "lib/",
+      "languageVersion": "2.12"
+    }
+  ],
+  "generated": "2021-09-10T23:15:06.301137Z",
+  "generator": "pub",
+  "generatorVersion": "2.14.1"
+}
