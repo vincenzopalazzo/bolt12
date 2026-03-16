@@ -27,7 +27,11 @@ interface TestVector {
 }
 
 function toHex(buf: Uint8Array): string {
-  return Buffer.from(buf).toString('hex');
+  let hex = '';
+  for (let i = 0; i < buf.length; i++) {
+    hex += buf[i].toString(16).padStart(2, '0');
+  }
+  return hex;
 }
 
 function runTests() {

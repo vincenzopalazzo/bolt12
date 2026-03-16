@@ -22,11 +22,19 @@ import {
 const encoder = new TextEncoder();
 
 function toHex(buf: Uint8Array): string {
-  return Buffer.from(buf).toString('hex');
+  let hex = '';
+  for (let i = 0; i < buf.length; i++) {
+    hex += buf[i].toString(16).padStart(2, '0');
+  }
+  return hex;
 }
 
 function fromHex(hex: string): Uint8Array {
-  return new Uint8Array(Buffer.from(hex, 'hex'));
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < hex.length; i += 2) {
+    bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
+  }
+  return bytes;
 }
 
 /**

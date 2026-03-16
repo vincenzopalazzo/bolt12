@@ -2690,10 +2690,13 @@ var bolt12 = (() => {
     return concatBytes(typeBytes, lengthBytes, record.value);
   }
   function compareBytes(a, b) {
-    const aHex = Buffer.from(a).toString("hex");
-    const bHex = Buffer.from(b).toString("hex");
-    if (aHex < bHex) return -1;
-    if (aHex > bHex) return 1;
+    const len = Math.min(a.length, b.length);
+    for (let i = 0; i < len; i++) {
+      if (a[i] < b[i]) return -1;
+      if (a[i] > b[i]) return 1;
+    }
+    if (a.length < b.length) return -1;
+    if (a.length > b.length) return 1;
     return 0;
   }
   function branchHash(a, b) {
@@ -3145,9 +3148,7 @@ var bolt12 = (() => {
     }
     if (preimage) {
       const computedHash = sha256(preimage);
-      const hashHex = Buffer.from(computedHash).toString("hex");
-      const expectedHex = Buffer.from(invoicePaymentHash).toString("hex");
-      if (hashHex !== expectedHex) {
+      if (computedHash.length !== invoicePaymentHash.length || !computedHash.every((b, i) => b === invoicePaymentHash[i])) {
         throw new Error("SHA256(preimage) does not match invoice_payment_hash");
       }
     }
