@@ -22,6 +22,7 @@ var bolt12 = (() => {
   var index_exports = {};
   __export(index_exports, {
     computeMerkleRoot: () => computeMerkleRoot,
+    createPayerProof: () => createPayerProof,
     decodeBolt12: () => decodeBolt12,
     decodeOffer: () => decodeOffer,
     decodePayerProof: () => decodePayerProof,
@@ -252,6 +253,15 @@ var bolt12 = (() => {
       records.push({ type: tlvType, length: tlvLength, value });
     }
     return records;
+  }
+  function serializeTlvRecord(record) {
+    const typeBytes = writeBigSize(record.type);
+    const lengthBytes = writeBigSize(record.length);
+    const result = new Uint8Array(typeBytes.length + lengthBytes.length + record.value.length);
+    result.set(typeBytes, 0);
+    result.set(lengthBytes, typeBytes.length);
+    result.set(record.value, typeBytes.length + lengthBytes.length);
+    return result;
   }
 
   // node_modules/@noble/hashes/esm/crypto.js
@@ -2684,6 +2694,9 @@ var bolt12 = (() => {
     const tagHash = sha256(tag);
     return sha256(concatBytes(tagHash, tagHash, msg));
   }
+  function taggedHashWithHash(tagHash, msg) {
+    return sha256(concatBytes(tagHash, tagHash, msg));
+  }
   function tlvToBytes(record) {
     const typeBytes = writeBigSize(record.type);
     const lengthBytes = writeBigSize(record.length);
@@ -2700,29 +2713,41 @@ var bolt12 = (() => {
     return 0;
   }
   function branchHash(a, b) {
-    const tag = encoder.encode("LnBranch");
+    const branchTagHash = sha256(encoder.encode("LnBranch"));
     const [smaller, larger] = compareBytes(a, b) < 0 ? [a, b] : [b, a];
-    return taggedHash2(tag, concatBytes(smaller, larger));
+    return taggedHashWithHash(branchTagHash, concatBytes(smaller, larger));
   }
-  function computeMerkleRoot(records) {
-    if (records.length === 0) {
+  function isSignatureType(type) {
+    return type >= 240n && type <= 1000n;
+  }
+  function computePerTlvBranches(records) {
+    const nonSig = records.filter((r) => !isSignatureType(r.type));
+    if (nonSig.length === 0) {
       throw new Error("Cannot compute merkle root of empty TLV set");
     }
-    const allTlvBytes = concatBytes(...records.map(tlvToBytes));
-    const leafTag = encoder.encode("LnLeaf");
-    const nonceTag = concatBytes(encoder.encode("LnAll"), allTlvBytes);
-    let nodes = records.map((record) => {
-      const tlvBytes = tlvToBytes(record);
-      const leaf = taggedHash2(leafTag, tlvBytes);
-      const nonce = taggedHash2(nonceTag, tlvBytes);
-      return branchHash(leaf, nonce);
+    const firstRecBytes = tlvToBytes(nonSig[0]);
+    const nonceTagHash = sha256(concatBytes(encoder.encode("LnNonce"), firstRecBytes));
+    const leafTagHash = sha256(encoder.encode("LnLeaf"));
+    const branchTagHash = sha256(encoder.encode("LnBranch"));
+    const branches = nonSig.map((record) => {
+      const recBytes = tlvToBytes(record);
+      const typeBytes = writeBigSize(record.type);
+      const leaf = taggedHashWithHash(leafTagHash, recBytes);
+      const nonce = taggedHashWithHash(nonceTagHash, typeBytes);
+      const [smaller, larger] = compareBytes(leaf, nonce) < 0 ? [leaf, nonce] : [nonce, leaf];
+      return taggedHashWithHash(branchTagHash, concatBytes(smaller, larger));
     });
+    return { branches, nonceTagHash, leafTagHash, branchTagHash };
+  }
+  function buildMerkleTree(nodes) {
+    const branchTagHash = sha256(encoder.encode("LnBranch"));
     while (nodes.length > 1) {
       const parents = [];
       let i = 0;
       while (i < nodes.length) {
         if (i + 1 < nodes.length) {
-          parents.push(branchHash(nodes[i], nodes[i + 1]));
+          const [smaller, larger] = compareBytes(nodes[i], nodes[i + 1]) < 0 ? [nodes[i], nodes[i + 1]] : [nodes[i + 1], nodes[i]];
+          parents.push(taggedHashWithHash(branchTagHash, concatBytes(smaller, larger)));
           i += 2;
         } else {
           parents.push(nodes[i]);
@@ -2732,6 +2757,10 @@ var bolt12 = (() => {
       nodes = parents;
     }
     return nodes[0];
+  }
+  function computeMerkleRoot(records) {
+    const { branches } = computePerTlvBranches(records);
+    return buildMerkleTree([...branches]);
   }
   function signatureTag(messageName) {
     return encoder.encode(`lightning${messageName}signature`);
@@ -3039,8 +3068,12 @@ var bolt12 = (() => {
   var INVOICE_PAYMENT_HASH = 168n;
   var INVOICE_NODE_ID = 176n;
   var SIGNATURE = 240n;
-  function isSignatureType(type) {
+  var REQUIRED_TYPES = /* @__PURE__ */ new Set([INVREQ_PAYER_ID, INVOICE_PAYMENT_HASH, INVOICE_NODE_ID]);
+  function isSignatureType2(type) {
     return type >= 240n && type <= 1000n;
+  }
+  function taggedHashWithPrecomputedTag(tagHash, msg) {
+    return sha256(concatBytes(tagHash, tagHash, msg));
   }
   function parseBigSizeArray(data) {
     const result = [];
@@ -3062,27 +3095,10 @@ var bolt12 = (() => {
     }
     return result;
   }
-  function compareBytes2(a, b) {
-    for (let i = 0; i < Math.min(a.length, b.length); i++) {
-      if (a[i] < b[i]) return -1;
-      if (a[i] > b[i]) return 1;
-    }
-    return a.length - b.length;
-  }
-  function branchHash2(a, b) {
-    const tag = encoder2.encode("LnBranch");
-    const [smaller, larger] = compareBytes2(a, b) < 0 ? [a, b] : [b, a];
-    return taggedHash2(tag, concatBytes(smaller, larger));
-  }
   function leafBranch(tlvBytes, nonceHash) {
     const leafTag = encoder2.encode("LnLeaf");
     const leaf = taggedHash2(leafTag, tlvBytes);
-    return branchHash2(leaf, nonceHash);
-  }
-  function tlvToBytes2(record) {
-    const typeBytes = writeBigSize(record.type);
-    const lengthBytes = writeBigSize(record.length);
-    return concatBytes(typeBytes, lengthBytes, record.value);
+    return branchHash(leaf, nonceHash);
   }
   function parsePayerProof(records) {
     const includedRecords = [];
@@ -3128,7 +3144,7 @@ var bolt12 = (() => {
           throw new Error("Invalid payer_signature: expected at least 64 bytes");
         }
         payerSignatureRaw = record.value;
-      } else if (!isSignatureType(type)) {
+      } else if (!isSignatureType2(type)) {
         includedRecords.push(record);
       }
     }
@@ -3187,7 +3203,7 @@ var bolt12 = (() => {
       throw new Error("omitted_tlvs must not contain 0");
     }
     for (const marker of omittedTlvs) {
-      if (isSignatureType(marker)) {
+      if (isSignatureType2(marker)) {
         throw new Error(`omitted_tlvs must not contain signature type number ${marker}`);
       }
     }
@@ -3205,76 +3221,74 @@ var bolt12 = (() => {
       }
     }
   }
+  function largestPow2LessThan(n) {
+    let p = 1;
+    while (p * 2 < n) p *= 2;
+    return p;
+  }
+  function allUnknown(nodes) {
+    return nodes.every((n) => !n.isKnown);
+  }
+  function rebuildTreeRecursive(nodes, missingHashes, missingIdx) {
+    if (nodes.length === 1) return nodes[0];
+    const split = largestPow2LessThan(nodes.length);
+    const leftNodes = nodes.slice(0, split);
+    const rightNodes = nodes.slice(split);
+    const leftAllUnknown = allUnknown(leftNodes);
+    const rightAllUnknown = allUnknown(rightNodes);
+    if (leftAllUnknown && rightAllUnknown) {
+      return { hash: new Uint8Array(0), isKnown: false };
+    }
+    if (leftAllUnknown) {
+      if (missingIdx.value >= missingHashes.length) {
+        throw new Error("Not enough missing_hashes to reconstruct merkle tree");
+      }
+      const leftHash = missingHashes[missingIdx.value++];
+      const right2 = rebuildTreeRecursive(rightNodes, missingHashes, missingIdx);
+      return { hash: branchHash(leftHash, right2.hash), isKnown: true };
+    }
+    if (rightAllUnknown) {
+      const left2 = rebuildTreeRecursive(leftNodes, missingHashes, missingIdx);
+      if (missingIdx.value >= missingHashes.length) {
+        throw new Error("Not enough missing_hashes to reconstruct merkle tree");
+      }
+      const rightHash = missingHashes[missingIdx.value++];
+      return { hash: branchHash(left2.hash, rightHash), isKnown: true };
+    }
+    const left = rebuildTreeRecursive(leftNodes, missingHashes, missingIdx);
+    const right = rebuildTreeRecursive(rightNodes, missingHashes, missingIdx);
+    return { hash: branchHash(left.hash, right.hash), isKnown: true };
+  }
   function reconstructMerkleRoot(proof) {
     const allNodes = [];
     let includedIdx = 0;
     let omittedIdx = 0;
+    allNodes.push({ hash: new Uint8Array(0), isKnown: false });
     while (includedIdx < proof.includedRecords.length || omittedIdx < proof.omittedTlvs.length) {
       const includedType = includedIdx < proof.includedRecords.length ? proof.includedRecords[includedIdx].type : BigInt(Number.MAX_SAFE_INTEGER);
       const omittedMarker = omittedIdx < proof.omittedTlvs.length ? proof.omittedTlvs[omittedIdx] : BigInt(Number.MAX_SAFE_INTEGER);
       if (includedType < omittedMarker) {
-        allNodes.push({
-          type: "included",
-          record: proof.includedRecords[includedIdx],
-          nonceHash: proof.leafHashes[includedIdx]
-        });
+        const record = proof.includedRecords[includedIdx];
+        const nonceHash = proof.leafHashes[includedIdx];
+        const hash = leafBranch(tlvToBytes(record), nonceHash);
+        allNodes.push({ hash, isKnown: true });
         includedIdx++;
       } else {
-        allNodes.push({ type: "omitted" });
+        allNodes.push({ hash: new Uint8Array(0), isKnown: false });
         omittedIdx++;
       }
     }
-    let missingIdx = 0;
-    let nodes = [];
-    for (const node of allNodes) {
-      if (node.type === "included" && node.record && node.nonceHash) {
-        const tlvBytes = tlvToBytes2(node.record);
-        nodes.push(leafBranch(tlvBytes, node.nonceHash));
-      } else {
-        nodes.push(new Uint8Array(0));
-      }
-    }
-    while (nodes.length > 1) {
-      const parents = [];
-      let i = 0;
-      while (i < nodes.length) {
-        if (i + 1 < nodes.length) {
-          const left = nodes[i];
-          const right = nodes[i + 1];
-          const leftEmpty = left.length === 0;
-          const rightEmpty = right.length === 0;
-          if (leftEmpty && rightEmpty) {
-            parents.push(new Uint8Array(0));
-          } else if (leftEmpty) {
-            if (missingIdx >= proof.missingHashes.length) {
-              throw new Error("Not enough missing_hashes to reconstruct merkle tree");
-            }
-            parents.push(branchHash2(proof.missingHashes[missingIdx++], right));
-          } else if (rightEmpty) {
-            if (missingIdx >= proof.missingHashes.length) {
-              throw new Error("Not enough missing_hashes to reconstruct merkle tree");
-            }
-            parents.push(branchHash2(left, proof.missingHashes[missingIdx++]));
-          } else {
-            parents.push(branchHash2(left, right));
-          }
-          i += 2;
-        } else {
-          parents.push(nodes[i]);
-          i += 1;
-        }
-      }
-      nodes = parents;
-    }
-    if (missingIdx !== proof.missingHashes.length) {
+    const missingIdx = { value: 0 };
+    const root = rebuildTreeRecursive(allNodes, proof.missingHashes, missingIdx);
+    if (missingIdx.value !== proof.missingHashes.length) {
       throw new Error(
-        `Excess missing_hashes: used ${missingIdx} of ${proof.missingHashes.length}`
+        `Excess missing_hashes: used ${missingIdx.value} of ${proof.missingHashes.length}`
       );
     }
-    if (nodes.length === 0 || nodes[0].length === 0) {
+    if (!root.isKnown) {
       throw new Error("Failed to reconstruct merkle root");
     }
-    return nodes[0];
+    return root.hash;
   }
   function verifyPayerProof(proof) {
     try {
@@ -3297,6 +3311,142 @@ var bolt12 = (() => {
     } catch (e) {
       return { valid: false, merkleRoot: new Uint8Array(32), error: e.message };
     }
+  }
+  function computeOmittedMarkers(nonSigTypes, includedTypes) {
+    const markers = [];
+    let nextMarker = 1n;
+    for (const type of nonSigTypes) {
+      if (type === 0n) continue;
+      if (includedTypes.has(type)) {
+        nextMarker = type + 1n;
+      } else {
+        markers.push(nextMarker);
+        nextMarker++;
+      }
+    }
+    return markers;
+  }
+  function computeSubtreeHash(nodes) {
+    if (nodes.length === 1) return nodes[0].hash;
+    const split = largestPow2LessThan(nodes.length);
+    const left = computeSubtreeHash(nodes.slice(0, split));
+    const right = computeSubtreeHash(nodes.slice(split));
+    return branchHash(left, right);
+  }
+  function collectMissingRecursive(nodes, missing) {
+    if (nodes.length === 1) return nodes[0];
+    const split = largestPow2LessThan(nodes.length);
+    const leftNodes = nodes.slice(0, split);
+    const rightNodes = nodes.slice(split);
+    const leftAllUnknown = allUnknown(leftNodes);
+    const rightAllUnknown = allUnknown(rightNodes);
+    if (leftAllUnknown && rightAllUnknown) {
+      const hash = branchHash(computeSubtreeHash(leftNodes), computeSubtreeHash(rightNodes));
+      return { hash, isKnown: false };
+    }
+    if (leftAllUnknown) {
+      const leftHash = computeSubtreeHash(leftNodes);
+      missing.push(leftHash);
+      const right2 = collectMissingRecursive(rightNodes, missing);
+      return { hash: branchHash(leftHash, right2.hash), isKnown: true };
+    }
+    if (rightAllUnknown) {
+      const left2 = collectMissingRecursive(leftNodes, missing);
+      const rightHash = computeSubtreeHash(rightNodes);
+      missing.push(rightHash);
+      return { hash: branchHash(left2.hash, rightHash), isKnown: true };
+    }
+    const left = collectMissingRecursive(leftNodes, missing);
+    const right = collectMissingRecursive(rightNodes, missing);
+    return { hash: branchHash(left.hash, right.hash), isKnown: true };
+  }
+  function computeMissingHashesForProof(allBranches, isIncluded) {
+    const nodes = allBranches.map((hash, i) => ({
+      hash,
+      isKnown: isIncluded[i]
+    }));
+    const missing = [];
+    collectMissingRecursive(nodes, missing);
+    return missing;
+  }
+  function fromHex(hex) {
+    const bytes = new Uint8Array(hex.length / 2);
+    for (let i = 0; i < hex.length; i += 2) {
+      bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
+    }
+    return bytes;
+  }
+  function toHex2(buf) {
+    let hex = "";
+    for (let i = 0; i < buf.length; i++) {
+      hex += buf[i].toString(16).padStart(2, "0");
+    }
+    return hex;
+  }
+  function makeTlv(type, value) {
+    return { type, length: BigInt(value.length), value };
+  }
+  function createPayerProof(params) {
+    const invoiceBytes = fromHex(params.invoiceHex);
+    const preimage = fromHex(params.preimageHex);
+    const payerSecretKey = fromHex(params.payerSecretKeyHex);
+    const invoiceRecords = parseTlvStream(invoiceBytes);
+    const nonSigRecords = invoiceRecords.filter((r) => !isSignatureType2(r.type));
+    const sigRecord = invoiceRecords.find((r) => r.type === SIGNATURE);
+    if (!sigRecord) throw new Error("Invoice missing signature (type 240)");
+    const paymentHashRecord = nonSigRecords.find((r) => r.type === INVOICE_PAYMENT_HASH);
+    if (!paymentHashRecord) throw new Error("Invoice missing payment_hash (type 168)");
+    const computedHash = sha256(preimage);
+    const paymentHash = paymentHashRecord.value;
+    if (computedHash.length !== paymentHash.length || !computedHash.every((b, i) => b === paymentHash[i])) {
+      throw new Error("SHA256(preimage) does not match invoice_payment_hash");
+    }
+    const merkleRoot = computeMerkleRoot(invoiceRecords);
+    const additionalTypes = new Set((params.includedTlvTypes || []).map(BigInt));
+    const includedTypes = /* @__PURE__ */ new Set([...REQUIRED_TYPES, ...additionalTypes]);
+    const nonSigTypes = nonSigRecords.map((r) => r.type);
+    const { branches, nonceTagHash } = computePerTlvBranches(invoiceRecords);
+    const isIncluded = nonSigRecords.map((r) => r.type !== 0n && includedTypes.has(r.type));
+    const omittedMarkers = computeOmittedMarkers(nonSigTypes, includedTypes);
+    const includedNonceHashes = [];
+    for (let i = 0; i < nonSigRecords.length; i++) {
+      if (isIncluded[i]) {
+        const typeBytes = writeBigSize(nonSigRecords[i].type);
+        const nonce = taggedHashWithPrecomputedTag(nonceTagHash, typeBytes);
+        includedNonceHashes.push(nonce);
+      }
+    }
+    const missingHashes = computeMissingHashesForProof(branches, isIncluded);
+    const noteBytes = params.note ? encoder2.encode(params.note) : new Uint8Array(0);
+    const payerMsg = sha256(concatBytes(noteBytes, merkleRoot));
+    const payerSig = schnorr.sign(payerMsg, payerSecretKey);
+    const proofRecords = [];
+    for (const record of nonSigRecords) {
+      if (record.type !== 0n && includedTypes.has(record.type)) {
+        proofRecords.push(record);
+      }
+    }
+    proofRecords.push(makeTlv(SIGNATURE, sigRecord.value));
+    proofRecords.push(makeTlv(PP_PREIMAGE, preimage));
+    if (omittedMarkers.length > 0) {
+      const omittedValue = concatBytes(...omittedMarkers.map((m) => writeBigSize(m)));
+      proofRecords.push(makeTlv(PP_OMITTED_TLVS, omittedValue));
+    }
+    if (missingHashes.length > 0) {
+      const missingValue = concatBytes(...missingHashes);
+      proofRecords.push(makeTlv(PP_MISSING_HASHES, missingValue));
+    }
+    if (includedNonceHashes.length > 0) {
+      const leafHashesValue = concatBytes(...includedNonceHashes);
+      proofRecords.push(makeTlv(PP_LEAF_HASHES, leafHashesValue));
+    }
+    const payerSigValue = noteBytes.length > 0 ? concatBytes(payerSig, noteBytes) : payerSig;
+    proofRecords.push(makeTlv(PP_PAYER_SIGNATURE, payerSigValue));
+    proofRecords.sort((a, b) => Number(a.type - b.type));
+    const proofBytes = concatBytes(...proofRecords.map(serializeTlvRecord));
+    const proofHex = toHex2(proofBytes);
+    const proofBech32 = encodeBolt12("lnp", proofBytes);
+    return { proofHex, proofBech32, merkleRoot };
   }
 
   // src/index.ts

@@ -18,8 +18,16 @@ import { sha256 } from '@noble/hashes/sha2';
 import { concatBytes } from '@noble/hashes/utils';
 import { schnorr } from '@noble/curves/secp256k1';
 import type { TlvRecord } from './tlv.js';
+import { parseTlvStream, serializeTlvRecord } from './tlv.js';
 import { readBigSize, writeBigSize } from './bigsize.js';
-import { taggedHash } from './merkle.js';
+import {
+  taggedHash,
+  tlvToBytes,
+  branchHash,
+  computePerTlvBranches,
+  computeMerkleRoot,
+} from './merkle.js';
+import { encodeBolt12 } from './bech32.js';
 import { compareBytes, isSignatureType, toHex } from './utils.js';
 
 const encoder = new TextEncoder();
@@ -37,6 +45,16 @@ const INVREQ_PAYER_ID = 88n;
 const INVOICE_PAYMENT_HASH = 168n;
 const INVOICE_NODE_ID = 176n;
 const SIGNATURE = 240n;
+
+// Required TLV types that must always be included in a payer proof
+const REQUIRED_TYPES = new Set([INVREQ_PAYER_ID, INVOICE_PAYMENT_HASH, INVOICE_NODE_ID]);
+
+/**
+ * Tagged hash using a pre-computed tag hash.
+ */
+function taggedHashWithPrecomputedTag(tagHash: Uint8Array, msg: Uint8Array): Uint8Array {
+  return sha256(concatBytes(tagHash, tagHash, msg));
+}
 
 /**
  * Parse an array of BigSize values from a byte buffer.
@@ -67,38 +85,12 @@ function parseSha256Array(data: Uint8Array): Uint8Array[] {
 }
 
 /**
- * Compute the nonce hash for a TLV field.
- * nonce = H("LnNonce" || TLV0_bytes, type_as_bigsize)
- *
- * Note: TLV0 is the invreq_metadata, which is NOT included in the payer proof
- * (it's secret). The nonce hashes are pre-computed and provided in leaf_hashes.
- */
-
-/**
- * Compute a Merkle branch hash from two child hashes.
- */
-function branchHash(a: Uint8Array, b: Uint8Array): Uint8Array {
-  const tag = encoder.encode('LnBranch');
-  const [smaller, larger] = compareBytes(a, b) < 0 ? [a, b] : [b, a];
-  return taggedHash(tag, concatBytes(smaller, larger));
-}
-
-/**
- * Compute the leaf+nonce branch for a given TLV record and its nonce hash.
+ * Compute the leaf+nonce branch for a TLV record given its nonce hash.
  */
 function leafBranch(tlvBytes: Uint8Array, nonceHash: Uint8Array): Uint8Array {
   const leafTag = encoder.encode('LnLeaf');
   const leaf = taggedHash(leafTag, tlvBytes);
   return branchHash(leaf, nonceHash);
-}
-
-/**
- * Serialize a TLV record to wire bytes.
- */
-function tlvToBytes(record: TlvRecord): Uint8Array {
-  const typeBytes = writeBigSize(record.type);
-  const lengthBytes = writeBigSize(record.length);
-  return concatBytes(typeBytes, lengthBytes, record.value);
 }
 
 export interface PayerProofFields {
@@ -290,33 +282,89 @@ function validateOmittedTlvs(omittedTlvs: bigint[], includedRecords: TlvRecord[]
 }
 
 /**
- * Reconstruct the Merkle root from a payer proof.
- *
- * This takes the included TLV records with their nonce hashes (leaf_hashes),
- * the omitted TLV markers, and the missing branch hashes, and reconstructs
- * the full Merkle tree to verify the invoice signature.
- *
- * The algorithm works by building the Merkle tree from left to right:
- * - For included fields, compute the leaf+nonce branch using the provided nonce hash.
- * - For omitted fields, pull a hash from missing_hashes.
- * - Combine adjacent nodes into parent branches.
+ * Largest power of 2 less than n. Used for recursive tree splitting.
  */
-export function reconstructMerkleRoot(proof: PayerProofFields): Uint8Array {
-  // Build the ordered list of all nodes (included and omitted)
-  // by interleaving included records and omitted markers
-  interface MerkleNode {
-    type: 'included' | 'omitted';
-    hash?: Uint8Array;
-    record?: TlvRecord;
-    nonceHash?: Uint8Array;
+function largestPow2LessThan(n: number): number {
+  let p = 1;
+  while (p * 2 < n) p *= 2;
+  return p;
+}
+
+interface MerkleNode {
+  hash: Uint8Array;
+  isKnown: boolean;
+}
+
+/**
+ * Check if all nodes in a slice are unknown.
+ */
+function allUnknown(nodes: MerkleNode[]): boolean {
+  return nodes.every(n => !n.isKnown);
+}
+
+/**
+ * Recursively build merkle tree (DFS top-down order), pulling missing hashes.
+ *
+ * Before recursing into a child, checks if it's entirely unknown. If so,
+ * pulls its subtree hash from missing_hashes without recursing. This ensures
+ * hashes are consumed in the same order they were produced.
+ */
+function rebuildTreeRecursive(
+  nodes: MerkleNode[],
+  missingHashes: Uint8Array[],
+  missingIdx: { value: number },
+): MerkleNode {
+  if (nodes.length === 1) return nodes[0];
+
+  const split = largestPow2LessThan(nodes.length);
+  const leftNodes = nodes.slice(0, split);
+  const rightNodes = nodes.slice(split);
+  const leftAllUnknown = allUnknown(leftNodes);
+  const rightAllUnknown = allUnknown(rightNodes);
+
+  if (leftAllUnknown && rightAllUnknown) {
+    return { hash: new Uint8Array(0), isKnown: false };
   }
 
+  if (leftAllUnknown) {
+    if (missingIdx.value >= missingHashes.length) {
+      throw new Error('Not enough missing_hashes to reconstruct merkle tree');
+    }
+    const leftHash = missingHashes[missingIdx.value++];
+    const right = rebuildTreeRecursive(rightNodes, missingHashes, missingIdx);
+    return { hash: branchHash(leftHash, right.hash), isKnown: true };
+  }
+
+  if (rightAllUnknown) {
+    const left = rebuildTreeRecursive(leftNodes, missingHashes, missingIdx);
+    if (missingIdx.value >= missingHashes.length) {
+      throw new Error('Not enough missing_hashes to reconstruct merkle tree');
+    }
+    const rightHash = missingHashes[missingIdx.value++];
+    return { hash: branchHash(left.hash, rightHash), isKnown: true };
+  }
+
+  const left = rebuildTreeRecursive(leftNodes, missingHashes, missingIdx);
+  const right = rebuildTreeRecursive(rightNodes, missingHashes, missingIdx);
+  return { hash: branchHash(left.hash, right.hash), isKnown: true };
+}
+
+/**
+ * Reconstruct the Merkle root from a payer proof.
+ *
+ * The tree has N positions: 1 implicit (type 0) + omitted markers + included records.
+ * Uses recursive DFS tree building to consume missing_hashes in the correct order.
+ */
+export function reconstructMerkleRoot(proof: PayerProofFields): Uint8Array {
+  // Build ordered list: implicit type 0 + interleaved included/omitted
   const allNodes: MerkleNode[] = [];
   let includedIdx = 0;
   let omittedIdx = 0;
 
+  // Position 0: implicit type 0 (always omitted)
+  allNodes.push({ hash: new Uint8Array(0), isKnown: false });
+
   // Merge included records and omitted markers in ascending order
-  // The markers represent positions of omitted fields
   while (includedIdx < proof.includedRecords.length || omittedIdx < proof.omittedTlvs.length) {
     const includedType = includedIdx < proof.includedRecords.length
       ? proof.includedRecords[includedIdx].type : BigInt(Number.MAX_SAFE_INTEGER);
@@ -324,93 +372,35 @@ export function reconstructMerkleRoot(proof: PayerProofFields): Uint8Array {
       ? proof.omittedTlvs[omittedIdx] : BigInt(Number.MAX_SAFE_INTEGER);
 
     if (includedType < omittedMarker) {
-      allNodes.push({
-        type: 'included',
-        record: proof.includedRecords[includedIdx],
-        nonceHash: proof.leafHashes[includedIdx],
-      });
+      const record = proof.includedRecords[includedIdx];
+      const nonceHash = proof.leafHashes[includedIdx];
+      const hash = leafBranch(tlvToBytes(record), nonceHash);
+      allNodes.push({ hash, isKnown: true });
       includedIdx++;
     } else {
-      allNodes.push({ type: 'omitted' });
+      allNodes.push({ hash: new Uint8Array(0), isKnown: false });
       omittedIdx++;
     }
   }
 
-  // Now build the Merkle tree
-  let missingIdx = 0;
+  const missingIdx = { value: 0 };
+  const root = rebuildTreeRecursive(allNodes, proof.missingHashes, missingIdx);
 
-  // Compute leaf branches for included nodes
-  let nodes: Uint8Array[] = [];
-  for (const node of allNodes) {
-    if (node.type === 'included' && node.record && node.nonceHash) {
-      const tlvBytes = tlvToBytes(node.record);
-      nodes.push(leafBranch(tlvBytes, node.nonceHash));
-    } else {
-      // Omitted node - will be filled from missing_hashes during tree construction
-      // Use a placeholder
-      nodes.push(new Uint8Array(0));
-    }
-  }
-
-  // Build tree bottom-up, pulling missing_hashes for omitted subtrees
-  while (nodes.length > 1) {
-    const parents: Uint8Array[] = [];
-    let i = 0;
-    while (i < nodes.length) {
-      if (i + 1 < nodes.length) {
-        const left = nodes[i];
-        const right = nodes[i + 1];
-        const leftEmpty = left.length === 0;
-        const rightEmpty = right.length === 0;
-
-        if (leftEmpty && rightEmpty) {
-          // Both omitted - combine into single omitted node
-          parents.push(new Uint8Array(0));
-        } else if (leftEmpty) {
-          // Left omitted, right present - pull from missing_hashes
-          if (missingIdx >= proof.missingHashes.length) {
-            throw new Error('Not enough missing_hashes to reconstruct merkle tree');
-          }
-          parents.push(branchHash(proof.missingHashes[missingIdx++], right));
-        } else if (rightEmpty) {
-          // Right omitted, left present - pull from missing_hashes
-          if (missingIdx >= proof.missingHashes.length) {
-            throw new Error('Not enough missing_hashes to reconstruct merkle tree');
-          }
-          parents.push(branchHash(left, proof.missingHashes[missingIdx++]));
-        } else {
-          // Both present
-          parents.push(branchHash(left, right));
-        }
-        i += 2;
-      } else {
-        // Odd node promoted
-        parents.push(nodes[i]);
-        i += 1;
-      }
-    }
-    nodes = parents;
-  }
-
-  if (missingIdx !== proof.missingHashes.length) {
+  if (missingIdx.value !== proof.missingHashes.length) {
     throw new Error(
-      `Excess missing_hashes: used ${missingIdx} of ${proof.missingHashes.length}`
+      `Excess missing_hashes: used ${missingIdx.value} of ${proof.missingHashes.length}`
     );
   }
 
-  if (nodes.length === 0 || nodes[0].length === 0) {
+  if (!root.isKnown) {
     throw new Error('Failed to reconstruct merkle root');
   }
 
-  return nodes[0];
+  return root.hash;
 }
 
 /**
  * Verify a payer proof's signatures.
- *
- * 1. Reconstruct the Merkle root from the proof data.
- * 2. Verify the invoice signature using invoice_node_id.
- * 3. Verify the payer_signature using invreq_payer_id.
  */
 export function verifyPayerProof(proof: PayerProofFields): {
   valid: boolean;
@@ -423,7 +413,6 @@ export function verifyPayerProof(proof: PayerProofFields): {
     // Verify invoice signature: tag = "lightninginvoicesignature"
     const invoiceSigTag = encoder.encode('lightninginvoicesignature');
     const invoiceSigMsg = taggedHash(invoiceSigTag, merkleRoot);
-    // invoice_node_id is a compressed point (33 bytes), schnorr uses x-only (32 bytes)
     const nodeIdX = proof.invoiceNodeId.length === 33
       ? proof.invoiceNodeId.slice(1)
       : proof.invoiceNodeId;
@@ -453,4 +442,263 @@ export function verifyPayerProof(proof: PayerProofFields): {
   } catch (e: any) {
     return { valid: false, merkleRoot: new Uint8Array(32), error: e.message };
   }
+}
+
+// ---- Creation ----
+
+export interface CreatePayerProofParams {
+  /** Hex-encoded invoice TLV stream */
+  invoiceHex: string;
+  /** Hex-encoded 32-byte payment preimage */
+  preimageHex: string;
+  /** Hex-encoded 32-byte payer secret key (for BIP-340 signing) */
+  payerSecretKeyHex: string;
+  /** Additional TLV types to include beyond the required ones */
+  includedTlvTypes?: number[];
+  /** Optional payer note (UTF-8) */
+  note?: string;
+}
+
+export interface CreatePayerProofResult {
+  /** Hex-encoded proof TLV stream */
+  proofHex: string;
+  /** Bech32-encoded proof with "lnp" prefix */
+  proofBech32: string;
+  /** 32-byte merkle root */
+  merkleRoot: Uint8Array;
+}
+
+/**
+ * Compute omitted TLV markers for the payer proof.
+ *
+ * Markers assign minimal values to omitted positions:
+ * - Type 0 is always implicit (no marker)
+ * - Before first included type: markers start at 1 and increment
+ * - After an included type: markers start at included_type+1 and increment
+ */
+function computeOmittedMarkers(
+  nonSigTypes: bigint[],
+  includedTypes: Set<bigint>,
+): bigint[] {
+  const markers: bigint[] = [];
+  let nextMarker = 1n;
+
+  for (const type of nonSigTypes) {
+    if (type === 0n) continue; // implicit
+
+    if (includedTypes.has(type)) {
+      nextMarker = type + 1n;
+    } else {
+      markers.push(nextMarker);
+      nextMarker++;
+    }
+  }
+
+  return markers;
+}
+
+/**
+ * Compute subtree hash for a fully-unknown subtree (creator side).
+ */
+function computeSubtreeHash(nodes: MerkleNode[]): Uint8Array {
+  if (nodes.length === 1) return nodes[0].hash;
+  const split = largestPow2LessThan(nodes.length);
+  const left = computeSubtreeHash(nodes.slice(0, split));
+  const right = computeSubtreeHash(nodes.slice(split));
+  return branchHash(left, right);
+}
+
+/**
+ * Recursively compute missing hashes in DFS top-down order.
+ * Mirrors the verifier's recursive tree reconstruction: before recursing
+ * into a child, checks if it's entirely unknown and pushes its hash directly.
+ */
+function collectMissingRecursive(
+  nodes: MerkleNode[],
+  missing: Uint8Array[],
+): MerkleNode {
+  if (nodes.length === 1) return nodes[0];
+
+  const split = largestPow2LessThan(nodes.length);
+  const leftNodes = nodes.slice(0, split);
+  const rightNodes = nodes.slice(split);
+  const leftAllUnknown = allUnknown(leftNodes);
+  const rightAllUnknown = allUnknown(rightNodes);
+
+  if (leftAllUnknown && rightAllUnknown) {
+    const hash = branchHash(computeSubtreeHash(leftNodes), computeSubtreeHash(rightNodes));
+    return { hash, isKnown: false };
+  }
+
+  if (leftAllUnknown) {
+    const leftHash = computeSubtreeHash(leftNodes);
+    missing.push(leftHash);
+    const right = collectMissingRecursive(rightNodes, missing);
+    return { hash: branchHash(leftHash, right.hash), isKnown: true };
+  }
+
+  if (rightAllUnknown) {
+    const left = collectMissingRecursive(leftNodes, missing);
+    const rightHash = computeSubtreeHash(rightNodes);
+    missing.push(rightHash);
+    return { hash: branchHash(left.hash, rightHash), isKnown: true };
+  }
+
+  const left = collectMissingRecursive(leftNodes, missing);
+  const right = collectMissingRecursive(rightNodes, missing);
+  return { hash: branchHash(left.hash, right.hash), isKnown: true };
+}
+
+/**
+ * Compute the missing hashes needed for merkle tree reconstruction.
+ * Uses recursive DFS to produce hashes in the same order the verifier consumes them.
+ */
+function computeMissingHashesForProof(
+  allBranches: Uint8Array[],
+  isIncluded: boolean[],
+): Uint8Array[] {
+  const nodes: MerkleNode[] = allBranches.map((hash, i) => ({
+    hash,
+    isKnown: isIncluded[i],
+  }));
+
+  const missing: Uint8Array[] = [];
+  collectMissingRecursive(nodes, missing);
+  return missing;
+}
+
+function fromHex(hex: string): Uint8Array {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < hex.length; i += 2) {
+    bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
+  }
+  return bytes;
+}
+
+function makeTlv(type: bigint, value: Uint8Array): TlvRecord {
+  return { type, length: BigInt(value.length), value };
+}
+
+/**
+ * Create a BOLT12 payer proof from an invoice, preimage, and payer secret key.
+ */
+export function createPayerProof(params: CreatePayerProofParams): CreatePayerProofResult {
+  const invoiceBytes = fromHex(params.invoiceHex);
+  const preimage = fromHex(params.preimageHex);
+  const payerSecretKey = fromHex(params.payerSecretKeyHex);
+
+  // Parse invoice TLV records
+  const invoiceRecords = parseTlvStream(invoiceBytes);
+
+  // Find required fields
+  const nonSigRecords = invoiceRecords.filter(r => !isSignatureType(r.type));
+  const sigRecord = invoiceRecords.find(r => r.type === SIGNATURE);
+  if (!sigRecord) throw new Error('Invoice missing signature (type 240)');
+
+  const paymentHashRecord = nonSigRecords.find(r => r.type === INVOICE_PAYMENT_HASH);
+  if (!paymentHashRecord) throw new Error('Invoice missing payment_hash (type 168)');
+
+  // Verify preimage
+  const computedHash = sha256(preimage);
+  const paymentHash = paymentHashRecord.value;
+  if (computedHash.length !== paymentHash.length ||
+      !computedHash.every((b, i) => b === paymentHash[i])) {
+    throw new Error('SHA256(preimage) does not match invoice_payment_hash');
+  }
+
+  // Compute merkle root from invoice
+  const merkleRoot = computeMerkleRoot(invoiceRecords);
+
+  // Determine included types
+  const INVOICE_FEATURES = 174n;
+  const additionalTypes = new Set((params.includedTlvTypes || []).map(BigInt));
+  const hasInvoiceFeatures = nonSigRecords.some(r => r.type === INVOICE_FEATURES);
+  const includedTypes = new Set([
+    ...REQUIRED_TYPES,
+    ...additionalTypes,
+    ...(hasInvoiceFeatures ? [INVOICE_FEATURES] : []),
+  ]);
+
+  // Filter: only types actually present in the invoice and not type 0
+  const nonSigTypes = nonSigRecords.map(r => r.type);
+
+  // Compute per-TLV branches
+  const { branches, nonceTagHash } = computePerTlvBranches(invoiceRecords);
+
+  // Build isIncluded array (type 0 is always NOT included)
+  const isIncluded = nonSigRecords.map(r => r.type !== 0n && includedTypes.has(r.type));
+
+  // Compute omitted markers
+  const omittedMarkers = computeOmittedMarkers(nonSigTypes, includedTypes);
+
+  // Compute nonce hashes (leaf_hashes) for included TLVs
+  const includedNonceHashes: Uint8Array[] = [];
+  for (let i = 0; i < nonSigRecords.length; i++) {
+    if (isIncluded[i]) {
+      const typeBytes = writeBigSize(nonSigRecords[i].type);
+      const nonce = taggedHashWithPrecomputedTag(nonceTagHash, typeBytes);
+      includedNonceHashes.push(nonce);
+    }
+  }
+
+  // Compute missing hashes
+  const missingHashes = computeMissingHashesForProof(branches, isIncluded);
+
+  // Sign: SIG(tag, msg, key) where tag = "lightningpayer_proofpayer_signature"
+  // msg = SHA256(note_bytes || merkle_root)
+  const noteBytes = params.note ? encoder.encode(params.note) : new Uint8Array(0);
+  const payerRawMsg = sha256(concatBytes(noteBytes, merkleRoot));
+  const payerSigTag = encoder.encode('lightningpayer_proofpayer_signature');
+  const payerMsg = taggedHash(payerSigTag, payerRawMsg);
+  const payerSig = schnorr.sign(payerMsg, payerSecretKey);
+
+  // Build proof TLV records in ascending type order
+  const proofRecords: TlvRecord[] = [];
+
+  // Add included invoice records (non-sig, non-type-0)
+  for (const record of nonSigRecords) {
+    if (record.type !== 0n && includedTypes.has(record.type)) {
+      proofRecords.push(record);
+    }
+  }
+
+  // Type 240: invoice signature
+  proofRecords.push(makeTlv(SIGNATURE, sigRecord.value));
+
+  // Type 242: preimage
+  proofRecords.push(makeTlv(PP_PREIMAGE, preimage));
+
+  // Type 244: omitted_tlvs
+  if (omittedMarkers.length > 0) {
+    const omittedValue = concatBytes(...omittedMarkers.map(m => writeBigSize(m)));
+    proofRecords.push(makeTlv(PP_OMITTED_TLVS, omittedValue));
+  }
+
+  // Type 246: missing_hashes
+  if (missingHashes.length > 0) {
+    const missingValue = concatBytes(...missingHashes);
+    proofRecords.push(makeTlv(PP_MISSING_HASHES, missingValue));
+  }
+
+  // Type 248: leaf_hashes
+  if (includedNonceHashes.length > 0) {
+    const leafHashesValue = concatBytes(...includedNonceHashes);
+    proofRecords.push(makeTlv(PP_LEAF_HASHES, leafHashesValue));
+  }
+
+  // Type 250: payer_signature (64-byte sig + optional note)
+  const payerSigValue = noteBytes.length > 0
+    ? concatBytes(payerSig, noteBytes)
+    : payerSig;
+  proofRecords.push(makeTlv(PP_PAYER_SIGNATURE, payerSigValue));
+
+  // Sort by type
+  proofRecords.sort((a, b) => Number(a.type - b.type));
+
+  // Serialize to bytes
+  const proofBytes = concatBytes(...proofRecords.map(serializeTlvRecord));
+  const proofHex = toHex(proofBytes);
+  const proofBech32 = encodeBolt12('lnp', proofBytes);
+
+  return { proofHex, proofBech32, merkleRoot };
 }

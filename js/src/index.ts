@@ -21,7 +21,10 @@ export {
   parsePayerProof,
   reconstructMerkleRoot,
   verifyPayerProof,
+  createPayerProof,
   type PayerProofFields,
+  type CreatePayerProofParams,
+  type CreatePayerProofResult,
 } from './payer_proof.js';
 
 import { decodeBolt12, type Bolt12HRP } from './bech32.js';
@@ -29,7 +32,7 @@ import { parseTlvStream, type TlvRecord } from './tlv.js';
 import { computeMerkleRoot, verifySignature } from './merkle.js';
 import { validateOffer } from './offer.js';
 import { extractOfferFields, type OfferFields } from './fields.js';
-import { parsePayerProof, type PayerProofFields } from './payer_proof.js';
+import { parsePayerProof, createPayerProof, type PayerProofFields, type CreatePayerProofParams, type CreatePayerProofResult } from './payer_proof.js';
 
 export interface DecodedOffer extends OfferFields {
   hrp: Bolt12HRP;

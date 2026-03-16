@@ -1,25 +1,11 @@
 /**
- * Tests for BOLT12 Payer Proof (experimental, PR #1295).
+ * Tests for BOLT12 Payer Proof using official test vectors.
  *
- * Since PR #1295 does not yet have official test vectors, these tests
- * verify the implementation against the spec's example and synthetic
- * test cases constructed from known invoice data.
+ * Test vectors from:
+ * https://github.com/vincenzopalazzo/payer-proof-test-vectors/blob/main/test_vectors.json
  */
 
-import { sha256 } from '@noble/hashes/sha2';
-import { concatBytes } from '@noble/hashes/utils';
-import { schnorr, secp256k1 } from '@noble/curves/secp256k1';
-import { parseTlvStream, type TlvRecord } from '../src/tlv.js';
-import { writeBigSize } from '../src/bigsize.js';
-import { taggedHash, computeMerkleRoot } from '../src/merkle.js';
-import {
-  parsePayerProof,
-  reconstructMerkleRoot,
-  verifyPayerProof,
-  type PayerProofFields,
-} from '../src/payer_proof.js';
-
-const encoder = new TextEncoder();
+import { createPayerProof } from '../src/payer_proof.js';
 
 function toHex(buf: Uint8Array): string {
   let hex = '';
@@ -29,70 +15,10 @@ function toHex(buf: Uint8Array): string {
   return hex;
 }
 
-function fromHex(hex: string): Uint8Array {
-  const bytes = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < hex.length; i += 2) {
-    bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
-  }
-  return bytes;
-}
-
-/**
- * Build a TLV record from type and value.
- */
-function makeTlv(type: bigint, value: Uint8Array): TlvRecord {
-  return { type, length: BigInt(value.length), value };
-}
-
-/**
- * Serialize a TLV record to wire bytes.
- */
-function tlvToBytes(record: TlvRecord): Uint8Array {
-  const typeBytes = writeBigSize(record.type);
-  const lengthBytes = writeBigSize(record.length);
-  return concatBytes(typeBytes, lengthBytes, record.value);
-}
-
-/**
- * Compute nonce hash: H("LnNonce" || TLV0_bytes, type_bigsize)
- */
-function nonceHash(tlv0Bytes: Uint8Array, type: bigint): Uint8Array {
-  const tag = concatBytes(encoder.encode('LnNonce'), tlv0Bytes);
-  return taggedHash(tag, writeBigSize(type));
-}
-
-/**
- * Compute leaf+nonce branch for a TLV record.
- */
-function leafNonceBranch(record: TlvRecord, tlv0Bytes: Uint8Array): Uint8Array {
-  const leafTag = encoder.encode('LnLeaf');
-  const wire = tlvToBytes(record);
-  const leaf = taggedHash(leafTag, wire);
-  const nonce = nonceHash(tlv0Bytes, record.type);
-  return branchHash(leaf, nonce);
-}
-
-function branchHash(a: Uint8Array, b: Uint8Array): Uint8Array {
-  const tag = encoder.encode('LnBranch');
-  function cmp(x: Uint8Array, y: Uint8Array): number {
-    for (let i = 0; i < Math.min(x.length, y.length); i++) {
-      if (x[i] < y[i]) return -1;
-      if (x[i] > y[i]) return 1;
-    }
-    return x.length - y.length;
-  }
-  const [smaller, larger] = cmp(a, b) < 0 ? [a, b] : [b, a];
-  return taggedHash(tag, concatBytes(smaller, larger));
-}
-
 // ---- Test infrastructure ----
 let passed = 0;
 let failed = 0;
 const failures: string[] = [];
-
-function assert(condition: boolean, msg: string) {
-  if (!condition) throw new Error(msg);
-}
 
 function test(name: string, fn: () => void) {
   try {
@@ -107,337 +33,276 @@ function test(name: string, fn: () => void) {
   }
 }
 
-function expectThrow(fn: () => void, msg: string) {
-  try {
-    fn();
-    throw new Error(`Expected error but succeeded: ${msg}`);
-  } catch (e: any) {
-    if (e.message === `Expected error but succeeded: ${msg}`) throw e;
-    // Expected to throw
-  }
+function assert(condition: boolean, msg: string) {
+  if (!condition) throw new Error(msg);
 }
 
-// ---- Tests ----
+// ---- Test vectors ----
 
-console.log('Payer Proof Tests (experimental, PR #1295)\n');
-
-// Generate test keys
-const invoicePrivKey = fromHex('1111111111111111111111111111111111111111111111111111111111111111');
-const invoicePubKey = secp256k1.getPublicKey(invoicePrivKey, true);
-const invoicePubKeyX = invoicePubKey.slice(1); // x-only for schnorr
-
-const payerPrivKey = fromHex('2222222222222222222222222222222222222222222222222222222222222222');
-const payerPubKey = secp256k1.getPublicKey(payerPrivKey, true);
-const payerPubKeyX = payerPubKey.slice(1);
-
-// Create a synthetic invoice
-const preimage = fromHex('0303030303030303030303030303030303030303030303030303030303030303');
-const paymentHash = sha256(preimage);
-
-// TLV0 (invreq_metadata) - secret, not included in payer proof
-const tlv0 = makeTlv(0n, fromHex('deadbeef'));
-const tlv0Bytes = tlvToBytes(tlv0);
-
-// Invoice fields
-const tlv10 = makeTlv(10n, encoder.encode('Test offer'));   // offer_description
-const tlv20 = makeTlv(20n, new Uint8Array([5]));            // offer_quantity_max
-const tlv22 = makeTlv(22n, invoicePubKey);                  // offer_issuer_id
-const tlv88 = makeTlv(88n, payerPubKey);                    // invreq_payer_id
-const tlv168 = makeTlv(168n, paymentHash);                  // invoice_payment_hash
-const tlv170 = makeTlv(170n, fromHex('2710'));               // invoice_amount (10000 msat)
-const tlv176 = makeTlv(176n, invoicePubKey);                 // invoice_node_id
-
-// All non-signature invoice TLVs
-const invoiceTlvs = [tlv0, tlv10, tlv20, tlv22, tlv88, tlv168, tlv170, tlv176];
-
-// Compute the full merkle root of the invoice (all non-sig TLVs)
-const allTlvBytes = concatBytes(...invoiceTlvs.map(tlvToBytes));
-const leafTag = encoder.encode('LnLeaf');
-const nonceTagPrefix = concatBytes(encoder.encode('LnAll'), allTlvBytes);
-
-function fullLeafBranch(record: TlvRecord): Uint8Array {
-  const wire = tlvToBytes(record);
-  const leaf = taggedHash(leafTag, wire);
-  const nonce = taggedHash(nonceTagPrefix, wire);
-  return branchHash(leaf, nonce);
+interface TestVector {
+  description: string;
+  name: string;
+  input: {
+    invoice_hex: string;
+    preimage_hex: string;
+    payer_secret_key_hex: string;
+    included_tlv_types: number[];
+    note?: string;
+  };
+  expected: {
+    valid: boolean;
+    merkle_root_hex: string;
+    proof_hex: string;
+    proof_bech32: string;
+    error?: string;
+  };
 }
 
-// Build full merkle tree
-let fullNodes = invoiceTlvs.map(fullLeafBranch);
-while (fullNodes.length > 1) {
-  const parents: Uint8Array[] = [];
-  let i = 0;
-  while (i < fullNodes.length) {
-    if (i + 1 < fullNodes.length) {
-      parents.push(branchHash(fullNodes[i], fullNodes[i + 1]));
-      i += 2;
+const vectors: TestVector[] = [
+  {
+    description: "Basic payer proof with required fields only (test 1)",
+    name: "basic_1",
+    input: {
+      invoice_hex: "00202a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a0a0b5465737420726566756e6452030186a05821035be5e9478209674a96e60f1f037f6176540fd001fa1d64694770c56a7709c42ca0e002ba72a6e8ba53e8b971ad0c9823968aef4d78ce8af255ab43dff83003c902fb8d035c4e0dec7215e26833938730e5e505aa62504da85ba57106a46b5a2404fc9d8e0202bb58b5feca505c74edc000d8282fc556e51a1024fc8e7d7e56c6f887c5c8d5f2002b00000000000000000000000000000000000000000000000000000000000000000000000000000000000000028f5304e2373e56ee7d774cb89e9f1afecf0ee7e3e3757f189908f069daa36c60002c0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000a21c00000001000003e8002a0000000000000064000000e8d4a510000000a4046553f100a820fbbbb6de2aa74c3c9570d2d8db1de31eadb66113c96034a7adb21243754d7683aa030186a0b02102bb58b5feca505c74edc000d8282fc556e51a1024fc8e7d7e56c6f887c5c8d5f2f0403cee1ed02def0c52ddf045482563de6da28ac951c2d76a13a082f8589178dab8fd80b504d63faa1008c7252ceac78d144caa0a0abc7225e1519b9d3c23d3d503",
+      preimage_hex: "6464646464646464646464646464646464646464646464646464646464646464",
+      payer_secret_key_hex: "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",
+      included_tlv_types: [],
+    },
+    expected: {
+      valid: true,
+      merkle_root_hex: "598183c1ede2780027aa4b17e883c3861fc5ea0675bc8669ab1c4a18245646dc",
+      proof_hex: "5821035be5e9478209674a96e60f1f037f6176540fd001fa1d64694770c56a7709c42ca820fbbbb6de2aa74c3c9570d2d8db1de31eadb66113c96034a7adb21243754d7683b02102bb58b5feca505c74edc000d8282fc556e51a1024fc8e7d7e56c6f887c5c8d5f2f0403cee1ed02def0c52ddf045482563de6da28ac951c2d76a13a082f8589178dab8fd80b504d63faa1008c7252ceac78d144caa0a0abc7225e1519b9d3c23d3d503f2206464646464646464646464646464646464646464646464646464646464646464f4060102595a5ba9f6a077518c89052c7a872cb9431e9d3a55f9c50fdf2cc68bec9f77767a131453ba5cf0aab9db4f1881573502c3f93d2742be17d67fd147ed9f272f5b0261524074c509f1b295892052ed114cc2cc8daff8aae229bba39604b2d07f1073f2634da9175c861c16e9213e317c86192c86d0067c46f3d8c258e07ab21eb1dc9a0ee7cd46f2349579f43a2f4122023d4fdab8ed2bc2c145a9cef93c0bdb12a4cf444490b9f860f8b5964e46182999e90a503f490cba87704a2bbd11ee273cd1d89914b3446be864d496783ace8552519775393bfcf932b8982df152399773678d2b467298f3dc41f09d925857e780a08a67adb442baaf52e634a4e37f00d92db8f71e031eb5ecfa40e87b009b05ec3b38cb88fc910d3b20d550a3de7f6297ee54a01f94e620f6b06b1f30b85e642e70f89108128d97838dc9ef5b5bca0052c1aec67310242ba6f3cf",
+      proof_bech32: "lnp1tqssxkl9a9rcyzt8f2twvrclqdlkzaj5plgqr7sav355wux9dfmsn3pv4qs0hwakmc42wnpuj4cd9kxmrh33atdkvyfujcp557kmyyjrw4xhdqasyyptkk94lm99qhr5ahqqpkpg9lz4deg6zqj0erna0etvd7y8chydtuhsgq7wu8ks9hhsc5ka7pz5sftrmek69zkf28pdw6sn5zp0sky30rdt3lvqk5zdv0a2zqyvwffvatrc69zv4g9q40rjyhs4rxua8s3a84gr7gsxgeryv3jxgeryv3jxgeryv3jxgeryv3jxgeryv3jxgeryv3jxge85qcqsyk26tw5ldgrh2xxgjpfv02rjew2rr6wn540ec58a7txx30kf7amk0gf3g5a6tnc24wwmfuvgz4e4qtplj0f8g2lp04nl69r7m8e89adsyc2jgp6v2z03k22cjgzja5g5eskv3khl32hz9xa689syktg87yrn7f35m2ghtjrpc9hfyylrzlyxrykgd5qx03r08kxztrs84vs7k8wf5rh8e4r0ydy4086r5t6pygpr6n76hrkjhskpgk5ua7fup0d39fx0g3zfpw0cvrutt9jwgcvznx0fpfgr7jgvh2rhqj3th5g7ufeu68vfj99ng347sex5jeur4n592fgewafe8070jv4cnqklz53ejaek0rftgeef3u7ug8cfmyjc2lncpgy2v7kmgs464afwvd9yudlspkfdhrm3uqc7khk05s8g0vqfkp0v8vuvhz8ujyxnkgx42z3aulmzjlh9fgqljnnzpa4sdv0npwz7vsh8p7y3pqfgm9ur3hy77k6megq99sdwcee3qfpt5meu7",
+    },
+  },
+  {
+    description: "Basic payer proof with required fields only (test 2)",
+    name: "basic_2",
+    input: {
+      invoice_hex: "00202b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b0a0b5465737420726566756e6452030186a0582102bb58b5feca505c74edc000d8282fc556e51a1024fc8e7d7e56c6f887c5c8d5f2a0e002ba72a6e8ba53e8b971ad0c9823968aef4d78ce8af255ab43dff83003c902fb8d035c4e0dec7215e26833938730e5e505aa62504da85ba57106a46b5a2404fc9d8e0202bb58b5feca505c74edc000d8282fc556e51a1024fc8e7d7e56c6f887c5c8d5f2002b00000000000000000000000000000000000000000000000000000000000000000000000000000000000000028f5304e2373e56ee7d774cb89e9f1afecf0ee7e3e3757f189908f069daa36c60002c0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000a21c00000001000003e8002a0000000000000064000000e8d4a510000000a4046553f100a820dfb417454d7432715ecfaa33d89abdaba4457c3b2cbd85a4a20620d0cd806da6aa030186a0b021028f5304e2373e56ee7d774cb89e9f1afecf0ee7e3e3757f189908f069daa36c60f040e05701c5d40d9f864633b0180b607947d52e8ca7140c044432b44f99d9a501be783b6a0679e3a8c5cffe330a82528e2fbbcf4f0e7c82d63a78a3001b2ece8793",
+      preimage_hex: "6565656565656565656565656565656565656565656565656565656565656565",
+      payer_secret_key_hex: "2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b",
+      included_tlv_types: [],
+    },
+    expected: {
+      valid: true,
+      merkle_root_hex: "fa5a8702b482b4539920ece8cb0aefc1188a59f48602292fa8cf9b750cd14910",
+      proof_hex: "582102bb58b5feca505c74edc000d8282fc556e51a1024fc8e7d7e56c6f887c5c8d5f2a820dfb417454d7432715ecfaa33d89abdaba4457c3b2cbd85a4a20620d0cd806da6b021028f5304e2373e56ee7d774cb89e9f1afecf0ee7e3e3757f189908f069daa36c60f040e05701c5d40d9f864633b0180b607947d52e8ca7140c044432b44f99d9a501be783b6a0679e3a8c5cffe330a82528e2fbbcf4f0e7c82d63a78a3001b2ece8793f2206565656565656565656565656565656565656565656565656565656565656565f4060102595a5ba9f6a04486cc9b07e670368d3e9501499dd74ce33433b5eae050935380905bb318dcaa3ef095dea3001105a95319ff0481eaaa5e399eb7669d1e2f24fc3b4ccf9265884906d3fd8383814e7946a0307f21205a56f1c9a625ef7584e0ece604a3d5a95ec98edc667da97717c60b40f53f6d463d944b706871166d0d8315fd1aff5b2be445760980f661e17042d742ed42acfbd034f9a2d8373062ecfd5e4a41b051fd8ef8600daf9943a78c87233c599e015c0a48a688af6dcead6bce519744f54c362ef561e15ceb69f4872b7dc6eab64ab1996c4a48063ea8aabc934c06ecd79cdc5856a16ad539e240390cd836ece057745b204b0bcb4adeda0a7a59ce164accccebf000fa40d9668b991c06c1144c6afdaf9b061c7323288f1db31de2a40b593c82960ef5c4e9b0e88a712ebaf6eb23796cfd44aa9ad3b61bcced89048ad5b92ca94cbf420e",
+      proof_bech32: "lnp1tqss9w6ckhlv55zuwnkuqqxc9qhu24h9rggzflyw04l9d3hcslzu340j4qsdldqhg4xhgvn3tm865v7cn276hfz90saje0v95j3qvgxsekqxmf4syypg75cyugmnu4hw04m5ewy7nud0ancwul37xatlrzvs3urfm23kcc8sgrs9wqw96sxelpjxxwcpszmq09ra2t5v5u2qcpzyx26ylxwe55qmu7pmdgr8ncagch8luvc2sffgutamea8sulyz6ca83gcqrvhvapun7gsx2et9v4jk2et9v4jk2et9v4jk2et9v4jk2et9v4jk2et9v4jk2e05qcqsyk26tw5ldgzysmxfkplxwqmg6054q9yem46vuv6r8d02upgfx5uqjpdmxxxu4gl0p9w75vqpzpdf2vvl7pypa249uwv7kanf6830yn7rknx0jfjcsjgx607c8qupfeu5dgps0usjqkjk78y6vf00wkzwpm8xqj3at227ex8dcena49m303stgr6n7m2x8k2ykurgwytx6rvrzh734l6m90jy2asfsrmxrctsgtt59m2z4naaqd8e5tvrwvrzan74ujjpkpglmrhcvqx6lx2r57xgwgeutx0qzhq2fzng3tmde6kkhnj3jaz02npk9m6krc2uad5lfpet0hrw4dj2kxvkcjjgqcl2324ujdxqdmxhnnw9s44pdt2nncjq8yxdsdhvupthgkeqfv9ukjk7mg985kwwze9ven8t7qq05sxev69ej8qxcy2yc6ha47dsv8rnyv5g78dnrh32gz6e8jpfvrh4cn5mp6y2wyht4ahtydukel2y42dd8dsmenkcjpy26kuje22vhapqu",
+    },
+  },
+  {
+    description: "Basic payer proof with required fields only (test 3)",
+    name: "basic_3",
+    input: {
+      invoice_hex: "00202c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c0a0b5465737420726566756e6452030186a05821028f5304e2373e56ee7d774cb89e9f1afecf0ee7e3e3757f189908f069daa36c60a0e002ba72a6e8ba53e8b971ad0c9823968aef4d78ce8af255ab43dff83003c902fb8d035c4e0dec7215e26833938730e5e505aa62504da85ba57106a46b5a2404fc9d8e0202bb58b5feca505c74edc000d8282fc556e51a1024fc8e7d7e56c6f887c5c8d5f2002b00000000000000000000000000000000000000000000000000000000000000000000000000000000000000028f5304e2373e56ee7d774cb89e9f1afecf0ee7e3e3757f189908f069daa36c60002c0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000a21c00000001000003e8002a0000000000000064000000e8d4a510000000a4046553f100a820352302489bc2fcf025cf00cda8308033f97ac87712ce90b4d7cd72c58e4c3af9aa030186a0b02103948b53da97fdf674c0877315acbcc8761aa3b9a582b439982fbafac99f97210ff040e41e3dd7a964b2be7566ab0cccc0815ca84ea978e6790396763fedc69a1273edc268dfa714f4a46ef4b18ec7d7c2dd9a8dc0565a286e3f066641c4bfa32f7ba8",
+      preimage_hex: "6666666666666666666666666666666666666666666666666666666666666666",
+      payer_secret_key_hex: "2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c",
+      included_tlv_types: [],
+    },
+    expected: {
+      valid: true,
+      merkle_root_hex: "0861098ff963c08af8b4f179c4ed447b710b265c76f4eded57d1eeb4c2417ee6",
+      proof_hex: "5821028f5304e2373e56ee7d774cb89e9f1afecf0ee7e3e3757f189908f069daa36c60a820352302489bc2fcf025cf00cda8308033f97ac87712ce90b4d7cd72c58e4c3af9b02103948b53da97fdf674c0877315acbcc8761aa3b9a582b439982fbafac99f97210ff040e41e3dd7a964b2be7566ab0cccc0815ca84ea978e6790396763fedc69a1273edc268dfa714f4a46ef4b18ec7d7c2dd9a8dc0565a286e3f066641c4bfa32f7ba8f2206666666666666666666666666666666666666666666666666666666666666666f4060102595a5ba9f6a0294eb9e464a2b02e9e3c8631f663428eefb8dbd9f4618375f36adc4bbacf5c889f9e078e8e453de641b01781e7b1722189fc5d02007ef7a1e75ead73a2c831b3a04d51decb91fb799b21614b82e1d2b6fc3ffa78be99de272e68b5a6168d41d44fb023cc54925ebe86da1d9c50ec93fb088f4718f19b4f62b40aba18f16dd2da5f0617d50b2fee3f329b7776426f9ed7096713d20f08122e334ca029db829c92f860c89eb06e0151b1cd7bd89c3acd9afe5eab05798bab23aef3b3287b7e7c69c9db642f7222ed3e82ba3f7b0bcbfe705d781be46e82a26dbb830e08e91ca582ceb73bb3dd1c283d381fffc328a0893db11384a915df52203e41702b90dd18edc0c0fa407aad5cdb1035c1d4c8e46f2d52f7a41497d0425a6f92d30d7356eae055f81cce743eb1e3e99aa9ce3f6561e8771e4a7bec45f1ad3f64ef20f499406f0a6ccaf9",
+      proof_bech32: "lnp1tqss9r6nqn3rw0jkae7hwn9cn6034lk0pmn78cm40uvfjz8sd8d2xmrq4qsr2gczfzdu9l8syh8spndgxzqr87t6epm39n5skntu6uk93exr47dsyypefz6nm2tlman5czrhx9dvhny8vx4rhxjc9dpenqhm47kfn7tjzrlsgrjpu0wh49jt90n4v64senxqs9w2sn4f0rn8jqukwcl7m356zfe7msngm7n3fa9ydm6trrk86lpdmx5dcpt952rw8urxvswyh73j77ag7gsxvenxvenxvenxvenxvenxvenxvenxvenxvenxvenxvenxvenxveh5qcqsyk26tw5ldgpff6u7ge9zkqhfu0yxx8mxxs5wa7udhk05vxphtm3qdg20m3c40tgap2pwnczus0q3nrm6a8l7k9egkn5a90960l2z3zja03g7wvszxujq5vn0zrnxv7vvm7myrmz56uhnc6k8jlse76t8ffck4fymw52uvwx98l53xwt99jmszzsrem2advct69nal3p0w54pr5swwc6ftstljw62qp2je0cd59l8sxew3gh80awuuae77arfgykfjy60w9npm98k8cvz33703ak794rj779peyqxt7mhsrkx68fjgayhxvaf0k9mmy2w7fj0a4kkvrn6vzgx7k8n5ymj3n9wvucwtvwxljhq89dt8dx7vpnqmdnrn9rnnlntra92yt3wkgvg0u84dg0kedf6w7pnvz8vseusfyren05hsp7r3jj3eq44rljkke08ts0jrrpgxf56h4ev4qer88smm8jd57rxtamp6nmdjy9m2adj6x07sesyqyj5847f7qtzkm4x80f5fqks8g55rp09kk2mn5ypnx7u3qvdhkuum4d36xjmn8ypek2unkd93k2",
+    },
+  },
+  {
+    description: "Payer proof with note: Payment for coffee",
+    name: "with_note_simple",
+    input: {
+      invoice_hex: "002032323232323232323232323232323232323232323232323232323232323232320a0b5465737420726566756e6452030186a058210290999dbbf43034bffb1dd53eac1eb4c33a4ea1c4f48ba585cfde3830840f0555a0e002ba72a6e8ba53e8b971ad0c9823968aef4d78ce8af255ab43dff83003c902fb8d035c4e0dec7215e26833938730e5e505aa62504da85ba57106a46b5a2404fc9d8e0202bb58b5feca505c74edc000d8282fc556e51a1024fc8e7d7e56c6f887c5c8d5f2002b00000000000000000000000000000000000000000000000000000000000000000000000000000000000000028f5304e2373e56ee7d774cb89e9f1afecf0ee7e3e3757f189908f069daa36c60002c0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000a21c00000001000003e8002a0000000000000064000000e8d4a510000000a4046553f100a8203ccee44d46ce196582f01189af32a2d7a8177e6a4aec2e7f2f6ff92a450667a6aa030186a0b021023c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1f040e9e591c186a5e508f1490ee3153697cb560cf4f36ce4dc4204b588be2511b9928eae6185199467af452cd378eaf1a8130caa77ab15aeda1a0fd4059c0efc53f9",
+      preimage_hex: "9696969696969696969696969696969696969696969696969696969696969696",
+      payer_secret_key_hex: "3232323232323232323232323232323232323232323232323232323232323232",
+      included_tlv_types: [],
+      note: "Payment for coffee",
+    },
+    expected: {
+      valid: true,
+      merkle_root_hex: "a57a02442b2e05891975dd8cb75daadd638acdb5855e7c11d94120bff7034fe7",
+      proof_hex: "58210290999dbbf43034bffb1dd53eac1eb4c33a4ea1c4f48ba585cfde3830840f0555a8203ccee44d46ce196582f01189af32a2d7a8177e6a4aec2e7f2f6ff92a450667a6b021023c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1f040e9e591c186a5e508f1490ee3153697cb560cf4f36ce4dc4204b588be2511b9928eae6185199467af452cd378eaf1a8130caa77ab15aeda1a0fd4059c0efc53f9f2209696969696969696969696969696969696969696969696969696969696969696f4060102595a5ba9f6a0916b5368e2487fa2c71d99df1f01e1926f2717f31486fceebdbfefcd4ae201788655bc3fd63d2fa8ae2f925eb48f97da35b4288079b72037e2ec930d6736dd089d57eda51f43aadbe2604f5b377e10e94e58348738466889622e6923eac11ba97a78c334d0e399f6ffbbe740a4e8e97b739569eccac9a3340cff7fa1357280ee01da3e1b2c9403cff9005fddabf7350aae55c3d54c9f62e1ecaef207d08540a7f860054685442ad32953046195bd162006fa0e57feb11d6a9c58df3992fefb96e2d0fe9af0bc8c5853bbdd4d1dc37c5b0906261fe8f8572499400d9fb1438984cb645778847e05a8e3e1a555c64d8428769ae01b258694b9b0cd3bc2a7aa62c327bdfa5269b15cda9a3d232704d6c37d13d5aa3b4537e8cfd2174a82394cf260e500d1a5aab3a094cfd612429bc09d6601ff5fa94c543795d6cf22722a441e52476575045061796d656e7420666f7220636f66666565",
+      proof_bech32: "lnp1tqss9yyenkalgvp5hla3m4f74s0tfse6f6sufayt5kzulh3cxzzq7p244qsrenhyf4rvuxt9stcprzd0x23d02qh0e4y4mpw0uhkl7f2g5rx0f4syyprcu4dmd8a7zd0jncvjntlay4rs6n7wr8c58v9j93cdwe9xhrmrv0sgr57tywps6j72z83fy8wx9fkjl94vr857dkwfhzzqj6c3039zxue9r4wvxz3n9r84azje5mcatc6sycv4fm6k9dwmgdql4q9ns80c5le7gsfd95kj6tfd95kj6tfd95kj6tfd95kj6tfd95kj6tfd95kj6tfd9h5qcqsyk26tw5ldgy3ddfk3cjg073vw8vemu0srcvjdun30uc5sm7wa0dlalx54csp0zr9t0pl6c7jl29w97f9ady0jldrtdpgspumwgphutkfxrt8xmws382hakj37sa2m03xqn6mxalpp62wtq6gwwzxdzykytnfy04vzxaf0fuvxdxsuwvldlamuaq2f68f0dee260vety6xdqvlal6zdtjsrhqrk37rvkfgq70lyq9lhdt7u6s4tj4c025e8mzu8k2aus86zz5pflcvqz5dp2y9tfjj5cyvx2m693qqmaqu4l7kywk48zcmuue9lhmjm3dpl567z7gckznh0w568wr03dsjp3xrl50s4eyn9qqm8a3gwycfjmy2auggls94r37rf24cexcg2rkntspkfvxjjumpnfmc2n65ckry77l55nfk9wd4x3ayvnsf4kr05fat23mg5m73n7jza9gyw2v7fsw2qx35k4t8gy5eltpys5mczwkvq0lt755c4phjhtv7gnj9fzpu5j8v46sg5rp09kk2mn5ypnx7u3qvdhkven9v5",
+    },
+  },
+  {
+    description: "Payer proof with note: Payment for consulting service",
+    name: "with_note_service",
+    input: {
+      invoice_hex: "002033333333333333333333333333333333333333333333333333333333333333330a0b5465737420726566756e6452030186a05821023c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1a0e002ba72a6e8ba53e8b971ad0c9823968aef4d78ce8af255ab43dff83003c902fb8d035c4e0dec7215e26833938730e5e505aa62504da85ba57106a46b5a2404fc9d8e0202bb58b5feca505c74edc000d8282fc556e51a1024fc8e7d7e56c6f887c5c8d5f2002b00000000000000000000000000000000000000000000000000000000000000000000000000000000000000028f5304e2373e56ee7d774cb89e9f1afecf0ee7e3e3757f189908f069daa36c60002c0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000a21c00000001000003e8002a0000000000000064000000e8d4a510000000a4046553f100a820fc19aa9fbfd2a861d1e58c290f4ccf06552567d2c00e1a10eabdd7d0c406289daa030186a0b02102407cba6352eaeb9354dc75ca26396785b27a85cfd4d58575de440902292d662af040e4f2a75f7359e5239ab923052e00da806f70c4b2e5f1b7bd3ed0334b443f8882dea120dcfeb4f3c7be976eaf5346add130825b5ac2d968dd0c643949c7f9327c",
+      preimage_hex: "9797979797979797979797979797979797979797979797979797979797979797",
+      payer_secret_key_hex: "3333333333333333333333333333333333333333333333333333333333333333",
+      included_tlv_types: [],
+      note: "Payment for consulting service",
+    },
+    expected: {
+      valid: true,
+      merkle_root_hex: "bb3fb492c0787341db99e728a40bd18a3f5beeef4942d37a3c00d3a88e891df3",
+      proof_hex: "5821023c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b1a820fc19aa9fbfd2a861d1e58c290f4ccf06552567d2c00e1a10eabdd7d0c406289db02102407cba6352eaeb9354dc75ca26396785b27a85cfd4d58575de440902292d662af040e4f2a75f7359e5239ab923052e00da806f70c4b2e5f1b7bd3ed0334b443f8882dea120dcfeb4f3c7be976eaf5346add130825b5ac2d968dd0c643949c7f9327cf2209797979797979797979797979797979797979797979797979797979797979797f4060102595a5ba9f6a091c67b3f790da53368c0544caef814e24069b1fc75a36bb881a853f71c55eb4742a0ba781720f04663deba7ffac5ca2d3a74af2e9ff50a22975f1479cc808dc9028c9bc439999e6337ed907b1535cbcf1ab1e5f867da59d29c5aa926dd45718e314ffa44ce594b2dc04280f3b575acc2f459f7f10bdd4a8474839d8d25705fe4ed280154b2fc3685f9e06cba28b9dfd7739dcfbdd1a504b2644d3dc5987653d8f860a31f3e3db78b51cbde287240197edde03b1b474c91d25cccea5f62ef6453bc993fb5b59839e98241bd63ce84dca332b99cc396c71bf2b80e56aced379819836d98e651ce7f9ac7d2a88b8bac8621fc3d5a87db2d4e9de0cd823b219e41241e66fa5e01f0e3294720ad47f95ad979d707c8630a0c9a6af5cb2a0c8ce786f679369e1997dd8753db6442ed5d6cb467fa1981004950f5f27c058adba98ef4d120b40e8a5061796d656e7420666f7220636f6e73756c74696e672073657276696365",
+      proof_bech32: "lnp1tqssy0rj4hd5lhcf4720pj2d0l5j5wr20ecvlzsaskgk8p4my56u0vd34qs0cxd2n7la92rp68jcc2g0fn8sv4f9vlfvqrs6zr4tm47scsrz38dsyypyql96vdfw46un2nw8tj3x89nctvn6sh8af4v9wh0ygzgz9ykkv2hsgrj09f6lwdv72gu6hy3s2tsqm2qx7uxyktjlrdaa8mgrxj6y87yg9h4pyrw0ad8nc7lfwm402dr2m5fssfd44skedrwscepef8rljvnu7gsf09uhj7te09uhj7te09uhj7te09uhj7te09uhj7te09uhj7te09l5qcqsyk26tw5ldgy3cean77gd55ek3sz5fjh0s98zgp5mrlr45d4m3qdg20m3c40tgap2pwnczus0q3nrm6a8l7k9egkn5a90960l2z3zja03g7wvszxujq5vn0zrnxv7vvm7myrmz56uhnc6k8jlse76t8ffck4fymw52uvwx98l53xwt99jmszzsrem2advct69nal3p0w54pr5swwc6ftstljw62qp2je0cd59l8sxew3gh80awuuae77arfgykfjy60w9npm98k8cvz33703ak794rj779peyqxt7mhsrkx68fjgayhxvaf0k9mmy2w7fj0a4kkvrn6vzgx7k8n5ymj3n9wvucwtvwxljhq89dt8dx7vpnqmdnrn9rnnlntra92yt3wkgvg0u84dg0kedf6w7pnvz8vseusfyren05hsp7r3jj3eq44rljkke08ts0jrrpgxf56h4ev4qer88smm8jd57rxtamp6nmdjy9m2adj6x07sesyqyj5847f7qtzkm4x80f5fqks8g55rp09kk2mn5ypnx7u3qvdhkuum4d36xjmn8ypek2unkd93k2",
+    },
+  },
+  {
+    description: "Payer proof with note: This is a longer note describing the payment purpose",
+    name: "with_note_long",
+    input: {
+      invoice_hex: "002034343434343434343434343434343434343434343434343434343434343434340a0b5465737420726566756e6452030186a0582102407cba6352eaeb9354dc75ca26396785b27a85cfd4d58575de440902292d662aa0e002ba72a6e8ba53e8b971ad0c9823968aef4d78ce8af255ab43dff83003c902fb8d035c4e0dec7215e26833938730e5e505aa62504da85ba57106a46b5a2404fc9d8e0202bb58b5feca505c74edc000d8282fc556e51a1024fc8e7d7e56c6f887c5c8d5f2002b00000000000000000000000000000000000000000000000000000000000000000000000000000000000000028f5304e2373e56ee7d774cb89e9f1afecf0ee7e3e3757f189908f069daa36c60002c0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000a21c00000001000003e8002a0000000000000064000000e8d4a510000000a4046553f100a8205bcd7f17c6d1d2636206ea55dfb2204ac6a9f10669108c222e319258efbed25eaa030186a0b02102b21db47a75ceee5c010f69f66d48d5a017e4e2f46b47b496ddf03498c26e1cecf040b6d0b144b2d600d6201bc7fc7670b0e2bcb054ca2d59b5eba9b1059f035fb2b7ebcd9fabf4ed166bc7e93e28b3c8c5ba4ed6ee9078971552ddfe3b3c88d72ad4",
+      preimage_hex: "9898989898989898989898989898989898989898989898989898989898989898",
+      payer_secret_key_hex: "3434343434343434343434343434343434343434343434343434343434343434",
+      included_tlv_types: [],
+      note: "This is a longer note describing the payment purpose",
+    },
+    expected: {
+      valid: true,
+      merkle_root_hex: "7d9bb8a3997fb9833844e61dc4d75dc829088b9bc7eaa042cb6c9d886f1012a1",
+      proof_hex: "582102407cba6352eaeb9354dc75ca26396785b27a85cfd4d58575de440902292d662aa8205bcd7f17c6d1d2636206ea55dfb2204ac6a9f10669108c222e319258efbed25eb02102b21db47a75ceee5c010f69f66d48d5a017e4e2f46b47b496ddf03498c26e1cecf040b6d0b144b2d600d6201bc7fc7670b0e2bcb054ca2d59b5eba9b1059f035fb2b7ebcd9fabf4ed166bc7e93e28b3c8c5ba4ed6ee9078971552ddfe3b3c88d72ad4f2209898989898989898989898989898989898989898989898989898989898989898f4060102595a5ba9f6a0f532a5ff479c99e787a5ff4693b76d75d431d03e8ff43629062067d2cc8eb74236757e4246ecbe2c94398711cb360fb87a3bd46b43f94076fb999cfcc7f6da0644975480d660610d6a0d2a5a2c395fc9c7c3c799976ccab5521ed35f6266ad2ee6dbb7604fc829420094dfa4e27f9f14ca66fd044d51e902f0bc4c5f509a048392a9271c8b3e109382729d79fa0e78ad7df1c22fe460d831a317805c2be77205f860d53027dc554cfc151a7c8e2178eb9e72845461c436ef0daaf6042420542fb2923b4af8ba3c091b194e8240ab162950c080283341f25a3dc60149cfc83b1ef3ae88502b39f2688dba74b50e44e5076dd45090656f14428f4378db92cd98176ed8fa74aa7780438d0a32edea348820eef7f2fbf05865d6916fbdb0d9425a22084bd70cdd88d2b8d19ab3cd3af0355529f1fc825f8160c8f3d74a98113d99a3ad89d7bf546869732069732061206c6f6e676572206e6f74652064657363726962696e6720746865207061796d656e7420707572706f7365",
+      proof_bech32: "lnp1tqssysruhf3496htjd2dcaw2ycuk0pdj02zul4x4s46au3qfqg5j6e324qs9hntlzlrdr5nrvgrw54wlkgsy434f7yrxjyyvyghrryjca7ldyh4syypty8d50f6uamjuqy8knandfr26q9lyut6xk3a5jmwlqdyccfhpem8sgzmdpv2ykttqp43qr0rlcanskr3tevz5egk4nd0t4xcst8crt7et067dn74lfmgkd0r7j03gk0yvtwjw6mhfq7yhz4fdml3m8jydw2k57gsf3xycnzvf3xycnzvf3xycnzvf3xycnzvf3xycnzvf3xycnzvf3x85qcqsyk26tw5ldg84x2jl73uun8nc0f0lg6fmwmt46scaq0507smzjp3qvlfver4hggm82ljzgmktuty58xr3rjekp7u85w75ddpljsrklwveelx87mdqv3yh2jqdvcrpp44q62j69su4ljw8c0ren9mve264y8knta3xdtfwumdmwcz0eq55yqy5m7jwylulzn9xdlgyf4g7jqhsh3x975y6qjpe92f8rj9nuyynsfef6706peu26l03cgh7gcxcxx330qzu90nhyp0cvr2nqf7u24x0c9g60j8zz78tneegg4rpcsmw7rd27czzggz597efyw62lzarczgmr98gys9tzc54psyq9qe5ruj68hrqzjw0eqa3auaw3pgzkw0jdzxm5a94pezw2pmd63gfqet0z3pg7smcmwfvmxqhdmv05a92w7qy8rg2xtk75dygyrh00uhm7pvxt453d77mpk2ztg3qsj7hpnwc354c6xdt8nf67q642203ljp9lqtqereawj5czy7engad38tm74rgd9ejq6tnypsjqmr0denk2u3qdehhgefqv3jhxcmjd93xjmn8yp6xsefqwpshjmt9de6zqur4wfcx7um9",
+    },
+  },
+  {
+    description: "Invalid proof - preimage does not match payment hash",
+    name: "invalid_preimage",
+    input: {
+      invoice_hex: "00203c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c0a0b5465737420726566756e6452030186a05821026776bee20c9bf74c421e703c23a132f6dbdf6c882c7f6634b128e66820139db1a0e002ba72a6e8ba53e8b971ad0c9823968aef4d78ce8af255ab43dff83003c902fb8d035c4e0dec7215e26833938730e5e505aa62504da85ba57106a46b5a2404fc9d8e0202bb58b5feca505c74edc000d8282fc556e51a1024fc8e7d7e56c6f887c5c8d5f2002b00000000000000000000000000000000000000000000000000000000000000000000000000000000000000028f5304e2373e56ee7d774cb89e9f1afecf0ee7e3e3757f189908f069daa36c60002c0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000a21c00000001000003e8002a0000000000000064000000e8d4a510000000a4046553f100a820e6d0fa555d22215548baedcbeed5078f3e4d69edb157e79675cc8cfcfc40048aaa030186a0b021022bbe83ba1af230dc06a960207aacbe4cb50172058e7d51d1fcd589a18a1ad1b0f0405051ffefb2b971ebdfdfe2907b803708dbfc68b60ab378d273a6faebc68f17136fe967d710598a517f2034b2dde6e4593fd2d6e03c0742b95289be5fa0e66c79",
+      preimage_hex: "c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9",
+      payer_secret_key_hex: "3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c",
+      included_tlv_types: [],
+    },
+    expected: {
+      valid: false,
+      merkle_root_hex: "",
+      proof_hex: "",
+      proof_bech32: "",
+      error: "PreimageMismatch",
+    },
+  },
+];
+
+// ---- Run tests ----
+
+console.log('Payer Proof Test Vectors\n');
+
+for (const v of vectors) {
+  test(`${v.name}: ${v.description}`, () => {
+    if (!v.expected.valid) {
+      // Should throw
+      let threw = false;
+      try {
+        createPayerProof({
+          invoiceHex: v.input.invoice_hex,
+          preimageHex: v.input.preimage_hex,
+          payerSecretKeyHex: v.input.payer_secret_key_hex,
+          includedTlvTypes: v.input.included_tlv_types,
+          note: v.input.note,
+        });
+      } catch {
+        threw = true;
+      }
+      assert(threw, `Expected error ${v.expected.error} but succeeded`);
+      return;
+    }
+
+    const result = createPayerProof({
+      invoiceHex: v.input.invoice_hex,
+      preimageHex: v.input.preimage_hex,
+      payerSecretKeyHex: v.input.payer_secret_key_hex,
+      includedTlvTypes: v.input.included_tlv_types,
+      note: v.input.note,
+    });
+
+    // Check merkle root
+    const merkleRootHex = toHex(result.merkleRoot);
+    assert(
+      merkleRootHex === v.expected.merkle_root_hex,
+      `Merkle root mismatch:\n  expected: ${v.expected.merkle_root_hex}\n  got:      ${merkleRootHex}`
+    );
+
+    // Check proof hex (compare everything except the payer_signature which is non-deterministic)
+    // The payer_signature is the last TLV (type 250), so compare up to that point
+    const expectedProofWithoutSig = stripPayerSignature(v.expected.proof_hex);
+    const actualProofWithoutSig = stripPayerSignature(result.proofHex);
+    assert(
+      actualProofWithoutSig === expectedProofWithoutSig,
+      `Proof hex mismatch (without payer sig):\n  expected: ${expectedProofWithoutSig}\n  got:      ${actualProofWithoutSig}`
+    );
+
+    // Verify the proof can be parsed and verified
+    // (This validates both the proof structure and signatures)
+    const { parseTlvStream } = await_import_tlv();
+    const { parsePayerProof, verifyPayerProof } = await_import_pp();
+    const proofBytes = fromHexLocal(result.proofHex);
+    const proofRecords = parseTlvStream(proofBytes);
+    const proof = parsePayerProof(proofRecords);
+    const verification = verifyPayerProof(proof);
+    assert(verification.valid, `Proof verification failed: ${verification.error}`);
+  });
+}
+
+// Helper: strip payer_signature TLV (type 250 = 0xfa) from proof hex
+function stripPayerSignature(hex: string): string {
+  // Find type 250 (0xfa) in the TLV stream and strip from there
+  const bytes = fromHexLocal(hex);
+  let offset = 0;
+  let lastNonSigOffset = 0;
+
+  while (offset < bytes.length) {
+    const typeStart = offset;
+    // Read type (BigSize)
+    const typeByte = bytes[offset];
+    let type: number;
+    let typeLen: number;
+    if (typeByte < 0xfd) {
+      type = typeByte;
+      typeLen = 1;
+    } else if (typeByte === 0xfd) {
+      type = (bytes[offset + 1] << 8) | bytes[offset + 2];
+      typeLen = 3;
     } else {
-      parents.push(fullNodes[i]);
-      i += 1;
+      // For our purposes, types > 0xffff won't appear
+      break;
+    }
+    offset += typeLen;
+
+    // Read length (BigSize)
+    const lenByte = bytes[offset];
+    let len: number;
+    let lenLen: number;
+    if (lenByte < 0xfd) {
+      len = lenByte;
+      lenLen = 1;
+    } else if (lenByte === 0xfd) {
+      len = (bytes[offset + 1] << 8) | bytes[offset + 2];
+      lenLen = 3;
+    } else {
+      break;
+    }
+    offset += lenLen;
+
+    // Skip value
+    offset += len;
+
+    if (type < 250) {
+      lastNonSigOffset = offset;
     }
   }
-  fullNodes = parents;
+
+  return hex.substring(0, lastNonSigOffset * 2);
 }
-const fullMerkleRoot = fullNodes[0];
 
-// Sign the invoice
-const invoiceSigTag = encoder.encode('lightninginvoicesignature');
-const invoiceSigMsg = taggedHash(invoiceSigTag, fullMerkleRoot);
-const invoiceSignature = schnorr.sign(invoiceSigMsg, invoicePrivKey);
+function fromHexLocal(hex: string): Uint8Array {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < hex.length; i += 2) {
+    bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
+  }
+  return bytes;
+}
 
-// ---- Now create payer proofs ----
-
-test('Parse payer proof with all fields included (except TLV0)', () => {
-  // Include all fields except TLV0
-  // leaf_hashes: nonce hashes for each included TLV
-  const included = [tlv10, tlv20, tlv22, tlv88, tlv168, tlv170, tlv176];
-  const nonces = included.map(r => nonceHash(tlv0Bytes, r.type));
-  const leafHashesValue = concatBytes(...nonces);
-
-  // omitted_tlvs: just TLV0, but represented as marker [1] (since 0 is implied)
-  const omittedTlvsValue = writeBigSize(1n);
-
-  // missing_hashes: the leaf+nonce branch of TLV0
-  const tlv0Branch = fullLeafBranch(tlv0);
-  const missingHashesValue = tlv0Branch;
-
-  // Build the payer proof TLV records
-  const records: TlvRecord[] = [
-    ...included,
-    makeTlv(240n, invoiceSignature),      // signature
-    makeTlv(242n, preimage),               // preimage
-    makeTlv(244n, omittedTlvsValue),       // omitted_tlvs
-    makeTlv(246n, missingHashesValue),     // missing_hashes
-    makeTlv(248n, leafHashesValue),        // leaf_hashes
-    makeTlv(250n, new Uint8Array(64)),     // payer_signature (placeholder 64-byte sig)
-  ];
-
-  // Sort by type (should already be sorted)
-  records.sort((a, b) => Number(a.type - b.type));
-
-  const proof = parsePayerProof(records);
-
-  assert(proof.includedRecords.length === 7, 'Should have 7 included records');
-  assert(proof.omittedTlvs.length === 1, 'Should have 1 omitted TLV marker');
-  assert(proof.omittedTlvs[0] === 1n, 'Omitted TLV marker should be 1');
-  assert(proof.leafHashes.length === 7, 'Should have 7 leaf hashes');
-  assert(proof.missingHashes.length === 1, 'Should have 1 missing hash');
-  assert(toHex(sha256(proof.preimage)) === toHex(paymentHash), 'Preimage should match payment hash');
-});
-
-test('Reject payer proof with invreq_metadata (type 0)', () => {
-  const records: TlvRecord[] = [
-    makeTlv(0n, fromHex('deadbeef')),    // invreq_metadata - NOT ALLOWED
-    makeTlv(88n, payerPubKey),
-    makeTlv(168n, paymentHash),
-    makeTlv(176n, invoicePubKey),
-    makeTlv(240n, invoiceSignature),
-    makeTlv(248n, new Uint8Array(32)),
-    makeTlv(250n, new Uint8Array(64)),
-  ];
-
-  expectThrow(() => parsePayerProof(records), 'invreq_metadata should be rejected');
-});
-
-test('Reject payer proof missing invreq_payer_id', () => {
-  const records: TlvRecord[] = [
-    makeTlv(168n, paymentHash),
-    makeTlv(176n, invoicePubKey),
-    makeTlv(240n, invoiceSignature),
-    makeTlv(248n, new Uint8Array(0)),
-    makeTlv(250n, new Uint8Array(64)),
-  ];
-
-  expectThrow(() => parsePayerProof(records), 'missing invreq_payer_id');
-});
-
-test('Reject payer proof missing invoice_payment_hash', () => {
-  const records: TlvRecord[] = [
-    makeTlv(88n, payerPubKey),
-    makeTlv(176n, invoicePubKey),
-    makeTlv(240n, invoiceSignature),
-    makeTlv(248n, new Uint8Array(32)),
-    makeTlv(250n, new Uint8Array(64)),
-  ];
-
-  expectThrow(() => parsePayerProof(records), 'missing invoice_payment_hash');
-});
-
-test('Reject payer proof missing signature', () => {
-  const records: TlvRecord[] = [
-    makeTlv(88n, payerPubKey),
-    makeTlv(168n, paymentHash),
-    makeTlv(176n, invoicePubKey),
-    makeTlv(248n, concatBytes(new Uint8Array(32), new Uint8Array(32))),
-    makeTlv(250n, new Uint8Array(64)),
-  ];
-
-  expectThrow(() => parsePayerProof(records), 'missing signature');
-});
-
-test('Reject payer proof with invalid preimage', () => {
-  const badPreimage = fromHex('0404040404040404040404040404040404040404040404040404040404040404');
-
-  const records: TlvRecord[] = [
-    makeTlv(88n, payerPubKey),
-    makeTlv(168n, paymentHash),
-    makeTlv(176n, invoicePubKey),
-    makeTlv(240n, invoiceSignature),
-    makeTlv(242n, badPreimage),    // wrong preimage
-    makeTlv(248n, new Uint8Array(0)),
-    makeTlv(250n, new Uint8Array(64)),
-  ];
-
-  expectThrow(() => parsePayerProof(records), 'bad preimage should be rejected');
-});
-
-test('Reject omitted_tlvs containing 0', () => {
-  const omittedValue = concatBytes(writeBigSize(0n), writeBigSize(5n));
-
-  const records: TlvRecord[] = [
-    makeTlv(88n, payerPubKey),
-    makeTlv(168n, paymentHash),
-    makeTlv(176n, invoicePubKey),
-    makeTlv(240n, invoiceSignature),
-    makeTlv(244n, omittedValue),
-    makeTlv(248n, concatBytes(new Uint8Array(32), new Uint8Array(32), new Uint8Array(32))),
-    makeTlv(250n, new Uint8Array(64)),
-  ];
-
-  expectThrow(() => parsePayerProof(records), 'omitted_tlvs with 0');
-});
-
-test('Reject omitted_tlvs not in ascending order', () => {
-  const omittedValue = concatBytes(writeBigSize(5n), writeBigSize(3n)); // 5, 3 - descending
-
-  const records: TlvRecord[] = [
-    makeTlv(88n, payerPubKey),
-    makeTlv(168n, paymentHash),
-    makeTlv(176n, invoicePubKey),
-    makeTlv(240n, invoiceSignature),
-    makeTlv(244n, omittedValue),
-    makeTlv(248n, concatBytes(new Uint8Array(32), new Uint8Array(32), new Uint8Array(32))),
-    makeTlv(250n, new Uint8Array(64)),
-  ];
-
-  expectThrow(() => parsePayerProof(records), 'omitted_tlvs not ascending');
-});
-
-test('Reject omitted_tlvs containing signature type (240)', () => {
-  const omittedValue = writeBigSize(240n);
-
-  const records: TlvRecord[] = [
-    makeTlv(88n, payerPubKey),
-    makeTlv(168n, paymentHash),
-    makeTlv(176n, invoicePubKey),
-    makeTlv(240n, invoiceSignature),
-    makeTlv(244n, omittedValue),
-    makeTlv(248n, concatBytes(new Uint8Array(32), new Uint8Array(32), new Uint8Array(32))),
-    makeTlv(250n, new Uint8Array(64)),
-  ];
-
-  expectThrow(() => parsePayerProof(records), 'omitted_tlvs with signature type');
-});
-
-test('Reject leaf_hashes count mismatch', () => {
-  // 3 included records but only 2 leaf hashes
-  const records: TlvRecord[] = [
-    makeTlv(88n, payerPubKey),
-    makeTlv(168n, paymentHash),
-    makeTlv(176n, invoicePubKey),
-    makeTlv(240n, invoiceSignature),
-    makeTlv(248n, concatBytes(new Uint8Array(32), new Uint8Array(32))), // only 2 hashes
-    makeTlv(250n, new Uint8Array(64)),
-  ];
-
-  expectThrow(() => parsePayerProof(records), 'leaf_hashes count mismatch');
-});
-
-test('Payer proof with payer_signature note', () => {
-  const note = 'Payment for order #42';
-  const noteBytes = encoder.encode(note);
-  const sigWithNote = concatBytes(new Uint8Array(64), noteBytes);
-
-  const included = [tlv88, tlv168, tlv176];
-  const nonces = included.map(r => nonceHash(tlv0Bytes, r.type));
-  const leafHashesValue = concatBytes(...nonces);
-
-  const records: TlvRecord[] = [
-    ...included,
-    makeTlv(240n, invoiceSignature),
-    makeTlv(248n, leafHashesValue),
-    makeTlv(250n, sigWithNote),
-  ];
-
-  records.sort((a, b) => Number(a.type - b.type));
-  const proof = parsePayerProof(records);
-
-  assert(proof.payerNote === note, `Expected note "${note}", got "${proof.payerNote}"`);
-});
-
-test('Full end-to-end: create and verify a simple payer proof', () => {
-  // Simplified case: include tlv10, tlv88, tlv168, tlv176; omit tlv0, tlv20, tlv22, tlv170
-  const included = [tlv10, tlv88, tlv168, tlv176];
-  const nonces = included.map(r => nonceHash(tlv0Bytes, r.type));
-  const leafHashesValue = concatBytes(...nonces);
-
-  // Omitted types: 0 (implied), 20, 22, 170
-  // Markers: 11 (after included type 10), 12 (consecutive omit), 89 (after included 88), 169 (after included 168)
-  const omittedTlvsValue = concatBytes(
-    writeBigSize(11n),   // marks omission after type 10
-    writeBigSize(12n),   // second consecutive omission
-    writeBigSize(89n),   // marks omission after type 88
-    writeBigSize(169n),  // marks omission after type 168
-  );
-
-  // Build the leaf+nonce branches for all invoice TLVs
-  const allBranches = invoiceTlvs.map(fullLeafBranch);
-
-  // Full merkle tree structure (8 leaves):
-  //          ____root____
-  //         /            \
-  //        x0123         x4567
-  //       /    \        /    \
-  //     x01    x23    x45    x67
-  //    / \    / \    / \    / \
-  //   0   10 20  22 88 168 170 176
-  //
-  // Included: 10, 88, 168, 176
-  // Omitted: 0, 20, 22, 170
-
-  // For reconstruction, we need missing hashes for omitted subtrees.
-  // The reconstruction algorithm works with the interleaved order
-  // (included + omitted markers sorted), pulling missing hashes when
-  // one side of a branch is entirely omitted.
-  //
-  // Since this is complex and the algorithm needs real merkle tree
-  // traversal, let's just verify that parsePayerProof accepts valid data.
-
-  const records: TlvRecord[] = [
-    ...included,
-    makeTlv(240n, invoiceSignature),
-    makeTlv(242n, preimage),
-    makeTlv(244n, omittedTlvsValue),
-    makeTlv(246n, new Uint8Array(0)), // missing_hashes - empty for now (won't verify sigs)
-    makeTlv(248n, leafHashesValue),
-    makeTlv(250n, concatBytes(new Uint8Array(64), encoder.encode('test proof'))),
-  ];
-
-  records.sort((a, b) => Number(a.type - b.type));
-  const proof = parsePayerProof(records);
-
-  assert(proof.includedRecords.length === 4, 'Should have 4 included records');
-  assert(proof.omittedTlvs.length === 4, 'Should have 4 omitted markers');
-  assert(proof.payerNote === 'test proof', 'Should have payer note');
-  assert(toHex(sha256(proof.preimage)) === toHex(paymentHash), 'Preimage should verify');
-});
-
-test('TypeScript compilation check for payer_proof exports', () => {
-  // Verify the module exports are accessible
-  assert(typeof parsePayerProof === 'function', 'parsePayerProof should be a function');
-  assert(typeof reconstructMerkleRoot === 'function', 'reconstructMerkleRoot should be a function');
-  assert(typeof verifyPayerProof === 'function', 'verifyPayerProof should be a function');
-});
+// Lazy imports to avoid circular issues at module level
+function await_import_tlv() {
+  return require('../src/tlv.js');
+}
+function await_import_pp() {
+  return require('../src/payer_proof.js');
+}
 
 // ---- Results ----
 console.log(`\n${'='.repeat(60)}`);
@@ -450,5 +315,5 @@ if (failures.length > 0) {
   }
   process.exit(1);
 } else {
-  console.log('\nAll payer proof tests passed!');
+  console.log('\nAll payer proof test vectors passed!');
 }

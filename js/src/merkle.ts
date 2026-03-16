@@ -1,9 +1,9 @@
 /**
  * Merkle tree computation for BOLT12 signature verification.
  *
- * Each TLV record is paired with a nonce derived from all TLVs:
+ * Each TLV record is paired with a nonce derived from the first TLV:
  *   leaf    = H("LnLeaf", tlv_bytes)
- *   nonce   = H("LnAll" || all_tlvs, individual_tlv_bytes)
+ *   nonce   = H(SHA256("LnNonce" || first_tlv_bytes), type_bytes)
  *   branch  = H("LnBranch", sorted(leaf, nonce))
  *
  * These branches are then paired up in a binary tree:
@@ -33,9 +33,16 @@ export function taggedHash(tag: Uint8Array, msg: Uint8Array): Uint8Array {
 }
 
 /**
+ * Tagged hash using a pre-computed tag hash.
+ */
+function taggedHashWithHash(tagHash: Uint8Array, msg: Uint8Array): Uint8Array {
+  return sha256(concatBytes(tagHash, tagHash, msg));
+}
+
+/**
  * Serialize a single TLV record to its wire format (type + length + value).
  */
-function tlvToBytes(record: TlvRecord): Uint8Array {
+export function tlvToBytes(record: TlvRecord): Uint8Array {
   const typeBytes = writeBigSize(record.type);
   const lengthBytes = writeBigSize(record.length);
   return concatBytes(typeBytes, lengthBytes, record.value);
@@ -44,48 +51,71 @@ function tlvToBytes(record: TlvRecord): Uint8Array {
 /**
  * Compute a branch from a pair of nodes, ordering them lexicographically.
  */
-function branchHash(a: Uint8Array, b: Uint8Array): Uint8Array {
-  const tag = encoder.encode('LnBranch');
+export function branchHash(a: Uint8Array, b: Uint8Array): Uint8Array {
+  const branchTagHash = sha256(encoder.encode('LnBranch'));
   const [smaller, larger] = compareBytes(a, b) < 0 ? [a, b] : [b, a];
-  return taggedHash(tag, concatBytes(smaller, larger));
+  return taggedHashWithHash(branchTagHash, concatBytes(smaller, larger));
+}
+
+/** Signature TLV type range (240-1000 inclusive). */
+function isSignatureType(type: bigint): boolean {
+  return type >= 240n && type <= 1000n;
 }
 
 /**
- * Compute the merkle root from an array of TLV records.
- *
- * For signature verification, exclude the signature TLV (type 240).
- * For offer_id computation, only include offer TLVs (types 1-79 and
- * 1000000000-1999999999).
+ * Compute per-TLV branch hashes (leaf+nonce combined).
+ * Returns the branch hash for each non-signature TLV, and the nonce tag hash.
  */
-export function computeMerkleRoot(records: TlvRecord[]): Uint8Array {
-  if (records.length === 0) {
+export function computePerTlvBranches(records: TlvRecord[]): {
+  branches: Uint8Array[];
+  nonceTagHash: Uint8Array;
+  leafTagHash: Uint8Array;
+  branchTagHash: Uint8Array;
+} {
+  const nonSig = records.filter(r => !isSignatureType(r.type));
+  if (nonSig.length === 0) {
     throw new Error('Cannot compute merkle root of empty TLV set');
   }
 
-  // Concatenate all TLV bytes for nonce computation
-  const allTlvBytes = concatBytes(...records.map(tlvToBytes));
+  // Nonce tag: SHA256("LnNonce" || first_record_bytes)
+  const firstRecBytes = tlvToBytes(nonSig[0]);
+  const nonceTagHash = sha256(concatBytes(encoder.encode('LnNonce'), firstRecBytes));
 
-  // Compute leaf+nonce branch for each TLV
-  const leafTag = encoder.encode('LnLeaf');
-  const nonceTag = concatBytes(encoder.encode('LnAll'), allTlvBytes);
+  const leafTagHash = sha256(encoder.encode('LnLeaf'));
+  const branchTagHash = sha256(encoder.encode('LnBranch'));
 
-  let nodes: Uint8Array[] = records.map((record) => {
-    const tlvBytes = tlvToBytes(record);
-    const leaf = taggedHash(leafTag, tlvBytes);
-    const nonce = taggedHash(nonceTag, tlvBytes);
-    return branchHash(leaf, nonce);
+  const branches: Uint8Array[] = nonSig.map((record) => {
+    const recBytes = tlvToBytes(record);
+    const typeBytes = writeBigSize(record.type);
+
+    const leaf = taggedHashWithHash(leafTagHash, recBytes);
+    const nonce = taggedHashWithHash(nonceTagHash, typeBytes);
+
+    // Combine leaf and nonce with lexicographic ordering
+    const [smaller, larger] = compareBytes(leaf, nonce) < 0 ? [leaf, nonce] : [nonce, leaf];
+    return taggedHashWithHash(branchTagHash, concatBytes(smaller, larger));
   });
 
-  // Build the tree bottom-up
+  return { branches, nonceTagHash, leafTagHash, branchTagHash };
+}
+
+/**
+ * Build merkle tree from per-TLV branch hashes, bottom-up.
+ */
+function buildMerkleTree(nodes: Uint8Array[]): Uint8Array {
+  const branchTagHash = sha256(encoder.encode('LnBranch'));
+
   while (nodes.length > 1) {
     const parents: Uint8Array[] = [];
     let i = 0;
     while (i < nodes.length) {
       if (i + 1 < nodes.length) {
-        parents.push(branchHash(nodes[i], nodes[i + 1]));
+        const [smaller, larger] = compareBytes(nodes[i], nodes[i + 1]) < 0
+          ? [nodes[i], nodes[i + 1]]
+          : [nodes[i + 1], nodes[i]];
+        parents.push(taggedHashWithHash(branchTagHash, concatBytes(smaller, larger)));
         i += 2;
       } else {
-        // Odd node promoted
         parents.push(nodes[i]);
         i += 1;
       }
@@ -94,6 +124,16 @@ export function computeMerkleRoot(records: TlvRecord[]): Uint8Array {
   }
 
   return nodes[0];
+}
+
+/**
+ * Compute the merkle root from an array of TLV records.
+ *
+ * Excludes signature TLVs (types 240-1000) from the tree.
+ */
+export function computeMerkleRoot(records: TlvRecord[]): Uint8Array {
+  const { branches } = computePerTlvBranches(records);
+  return buildMerkleTree([...branches]);
 }
 
 /**
