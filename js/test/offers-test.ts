@@ -10,6 +10,7 @@ import * as path from 'path';
 import { decodeBolt12 } from '../src/bech32.js';
 import { parseTlvStream, type TlvRecord } from '../src/tlv.js';
 import { validateOffer } from '../src/offer.js';
+import { decodeOffer } from '../src/index.js';
 
 interface TestField {
   type: number;
@@ -132,3 +133,20 @@ function runTests() {
 }
 
 runTests();
+
+// Test the high-level typed API
+console.log('\n--- Typed API test ---');
+const SAMPLE = 'lno1pgx9getnwss8vetrw3hhyucjy358garswvaz7tmzdak8gvfj9ehhyeeqgf85c4p3xgsxjmnyw4ehgunfv4e3vggzamrjghtt05kvkvpcp0a79gmy3nt6jsn98ad2xs8de6sl9qmgvcvs';
+const { description, issuer_id, offer_id, amount, hrp } = decodeOffer(SAMPLE);
+
+console.log(`  hrp: ${hrp}`);
+console.log(`  description: ${description}`);
+console.log(`  issuer_id: ${issuer_id}`);
+console.log(`  offer_id: ${toHex(offer_id)}`);
+console.log(`  amount: ${amount}`);
+
+if (hrp !== 'lno') throw new Error('Expected lno');
+if (!description) throw new Error('Expected description');
+if (!issuer_id) throw new Error('Expected issuer_id');
+if (!offer_id) throw new Error('Expected offer_id');
+console.log('  Typed API: PASS');

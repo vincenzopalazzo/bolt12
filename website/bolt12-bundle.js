@@ -26,6 +26,7 @@ var bolt12 = (() => {
     decodeOffer: () => decodeOffer,
     decodePayerProof: () => decodePayerProof,
     encodeBolt12: () => encodeBolt12,
+    extractOfferFields: () => extractOfferFields,
     parsePayerProof: () => parsePayerProof,
     parseTlvStream: () => parseTlvStream,
     readBigSize: () => readBigSize,
@@ -2947,6 +2948,82 @@ var bolt12 = (() => {
     return { records, hasDescription, hasAmount, hasCurrency, hasIssuerId, hasPaths };
   }
 
+  // src/fields.ts
+  function tu64(data) {
+    if (data.length === 0) return 0n;
+    let val = 0n;
+    for (let i = 0; i < data.length; i++) {
+      val = val << 8n | BigInt(data[i]);
+    }
+    return val;
+  }
+  function toHex(buf) {
+    let hex = "";
+    for (let i = 0; i < buf.length; i++) {
+      hex += ("0" + buf[i].toString(16)).slice(-2);
+    }
+    return hex;
+  }
+  var KNOWN_CHAINS = {
+    "6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000": "bitcoin",
+    "43497fd7f826957108f4a30fd9cec3aeba79972084e90ead01ea330900000000": "testnet",
+    "06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f": "regtest"
+  };
+  function parseChains(data) {
+    const chains = [];
+    for (let i = 0; i < data.length; i += 32) {
+      const hash = toHex(data.slice(i, i + 32));
+      chains.push({ hash, name: KNOWN_CHAINS[hash] || "unknown" });
+    }
+    return chains;
+  }
+  function extractOfferFields(records) {
+    const fields = {
+      has_paths: false,
+      records
+    };
+    const utf8 = new TextDecoder("utf-8", { fatal: false });
+    for (const rec of records) {
+      switch (rec.type) {
+        case 2n:
+          fields.chains = parseChains(rec.value);
+          break;
+        case 4n:
+          fields.metadata = toHex(rec.value);
+          break;
+        case 6n:
+          fields.currency = utf8.decode(rec.value);
+          break;
+        case 8n:
+          fields.amount = tu64(rec.value);
+          break;
+        case 10n:
+          fields.description = utf8.decode(rec.value);
+          break;
+        case 12n:
+          fields.features = toHex(rec.value);
+          break;
+        case 14n:
+          fields.absolute_expiry = tu64(rec.value);
+          break;
+        case 16n:
+          fields.has_paths = true;
+          fields.paths = toHex(rec.value);
+          break;
+        case 18n:
+          fields.issuer = utf8.decode(rec.value);
+          break;
+        case 20n:
+          fields.quantity_max = tu64(rec.value);
+          break;
+        case 22n:
+          fields.issuer_id = toHex(rec.value);
+          break;
+      }
+    }
+    return fields;
+  }
+
   // src/payer_proof.ts
   var encoder2 = new TextEncoder();
   var PP_PREIMAGE = 242n;
@@ -3229,8 +3306,9 @@ var bolt12 = (() => {
     }
     const records = parseTlvStream(data);
     validateOffer(records);
-    const merkleRoot = computeMerkleRoot(records);
-    return { hrp, records, merkleRoot };
+    const fields = extractOfferFields(records);
+    const offer_id = computeMerkleRoot(records);
+    return { ...fields, hrp, offer_id };
   }
   function decodePayerProof(bolt12String) {
     const { hrp, data } = decodeBolt12(bolt12String);

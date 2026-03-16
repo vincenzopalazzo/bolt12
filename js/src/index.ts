@@ -13,6 +13,11 @@ export { parseTlvStream, type TlvRecord } from './tlv.js';
 export { computeMerkleRoot, taggedHash, verifySignature } from './merkle.js';
 export { validateOffer } from './offer.js';
 export {
+  extractOfferFields,
+  type OfferFields,
+  type Chain,
+} from './fields.js';
+export {
   parsePayerProof,
   reconstructMerkleRoot,
   verifyPayerProof,
@@ -23,16 +28,19 @@ import { decodeBolt12, type Bolt12HRP } from './bech32.js';
 import { parseTlvStream, type TlvRecord } from './tlv.js';
 import { computeMerkleRoot, verifySignature } from './merkle.js';
 import { validateOffer } from './offer.js';
+import { extractOfferFields, type OfferFields } from './fields.js';
 import { parsePayerProof, type PayerProofFields } from './payer_proof.js';
 
-export interface DecodedOffer {
+export interface DecodedOffer extends OfferFields {
   hrp: Bolt12HRP;
-  records: TlvRecord[];
-  merkleRoot: Uint8Array;
+  offer_id: Uint8Array;
 }
 
 /**
  * Decode and validate a BOLT12 offer string.
+ *
+ * Returns typed fields directly:
+ *   const { description, amount, issuer_id, offer_id } = decodeOffer(str);
  */
 export function decodeOffer(bolt12String: string): DecodedOffer {
   const { hrp, data } = decodeBolt12(bolt12String);
@@ -46,10 +54,13 @@ export function decodeOffer(bolt12String: string): DecodedOffer {
   // Validate offer semantics
   validateOffer(records);
 
-  // Compute offer_id (merkle root of all TLVs)
-  const merkleRoot = computeMerkleRoot(records);
+  // Extract typed fields
+  const fields = extractOfferFields(records);
 
-  return { hrp, records, merkleRoot };
+  // Compute offer_id (merkle root of all TLVs)
+  const offer_id = computeMerkleRoot(records);
+
+  return { ...fields, hrp, offer_id };
 }
 
 export interface DecodedPayerProof {
