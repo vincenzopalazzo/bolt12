@@ -458,35 +458,77 @@
     });
   }
 
-  // ---- Code example: Run button (live decode) ----
-  var runBtn = document.getElementById('run-decode-btn');
-  if (runBtn) {
-    runBtn.addEventListener('click', function () {
-      var output = document.getElementById('decode-output');
-      try {
-        var decoded = bolt12.decodeOffer(SAMPLE_OFFER);
-        var lines = [];
-        lines.push('<span class="code-comment">// Decoded offer:</span>');
-        lines.push('hrp: <span class="code-string">\'' + decoded.hrp + '\'</span>');
-        lines.push('');
-        lines.push('<span class="code-comment">// TLV records:</span>');
-        for (var i = 0; i < decoded.records.length; i++) {
-          var rec = decoded.records[i];
-          var typeNum = Number(rec.type);
-          var info = TLV_INFO[typeNum];
-          var name = info ? info.name : 'unknown';
-          var val = info ? info.decode(rec.value) : toHex(rec.value);
-          lines.push('  type=<span class="code-keyword">' + typeNum + '</span> (' + escapeHtml(name) + ')  len=' + Number(rec.length));
-          lines.push('    <span class="code-string">' + escapeHtml(val) + '</span>');
+  // ---- Live code examples: run each snippet and capture console.log ----
+  function runExample(outputId, fn) {
+    var outputEl = document.getElementById(outputId);
+    if (!outputEl) return;
+    var lines = [];
+    var fakeConsole = {
+      log: function () {
+        var parts = [];
+        for (var i = 0; i < arguments.length; i++) {
+          var v = arguments[i];
+          if (v instanceof Uint8Array) {
+            parts.push(toHex(v));
+          } else if (typeof v === 'object' && v !== null) {
+            try { parts.push(JSON.stringify(v)); } catch(e) { parts.push(String(v)); }
+          } else {
+            parts.push(String(v));
+          }
         }
-        lines.push('');
-        lines.push('<span class="code-comment">// offer_id (Merkle root):</span>');
-        lines.push('<span class="code-string">' + toHex(decoded.merkleRoot) + '</span>');
-        output.innerHTML = lines.join('\n');
-      } catch (e) {
-        output.innerHTML = '<span style="color:#ff8a8a;">Error: ' + escapeHtml(e.message) + '</span>';
+        lines.push(escapeHtml(parts.join(' ')));
       }
-      runBtn.textContent = 'Re-run';
-    });
+    };
+    try {
+      fn(fakeConsole);
+      outputEl.innerHTML = '<span class="code-comment">// Output:</span>\n' + lines.join('\n');
+    } catch (e) {
+      outputEl.innerHTML = '<span style="color:#ff8a8a;">Error: ' + escapeHtml(e.message) + '</span>';
+    }
   }
+
+  // Example 1: decodeOffer
+  runExample('ex1-output', function (console) {
+    var decoded = bolt12.decodeOffer(SAMPLE_OFFER);
+    console.log('hrp:', decoded.hrp);
+    console.log('records:', decoded.records.length, 'fields');
+    for (var i = 0; i < decoded.records.length; i++) {
+      var rec = decoded.records[i];
+      console.log('  type=' + rec.type + ' len=' + rec.length);
+    }
+    console.log('offer_id:', toHex(decoded.merkleRoot));
+  });
+
+  // Example 2: Low-level TLV parsing
+  runExample('ex2-output', function (console) {
+    var result = bolt12.decodeBolt12(SAMPLE_OFFER);
+    var records = bolt12.parseTlvStream(result.data);
+    var description = null;
+    for (var i = 0; i < records.length; i++) {
+      if (records[i].type === 10n) { description = records[i]; break; }
+    }
+    console.log('prefix:', result.hrp);
+    console.log('description:', new TextDecoder().decode(description.value));
+    console.log('offer_id:', toHex(bolt12.computeMerkleRoot(records)));
+  });
+
+  // Example 3: Validate and inspect fields
+  runExample('ex3-output', function (console) {
+    var result = bolt12.decodeBolt12(SAMPLE_OFFER);
+    var records = bolt12.parseTlvStream(result.data);
+    try {
+      bolt12.validateOffer(records);
+      console.log('Valid offer!');
+    } catch (e) {
+      console.log('Invalid:', e.message);
+    }
+    var NAMES = { 2:'chains', 6:'currency', 8:'amount', 10:'description', 18:'issuer', 22:'issuer_id' };
+    for (var i = 0; i < records.length; i++) {
+      var rec = records[i];
+      var name = NAMES[Number(rec.type)] || 'type_' + rec.type;
+      var isText = rec.type === 10n || rec.type === 18n;
+      var val = isText ? new TextDecoder().decode(rec.value) : toHex(rec.value);
+      console.log(name + ': ' + val);
+    }
+  });
 })();
