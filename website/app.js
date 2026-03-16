@@ -437,4 +437,56 @@
 
   // Initial decode
   decodeAndRender(SAMPLE_OFFER);
+
+  // ---- Code example: Copy buttons ----
+  var copyBtns = document.querySelectorAll('.copy-btn');
+  for (var b = 0; b < copyBtns.length; b++) {
+    copyBtns[b].addEventListener('click', function () {
+      var btn = this;
+      var targetId = btn.getAttribute('data-target');
+      var codeEl = document.getElementById(targetId);
+      if (!codeEl) return;
+      var text = codeEl.textContent;
+      navigator.clipboard.writeText(text).then(function () {
+        btn.textContent = 'Copied!';
+        btn.classList.add('copied');
+        setTimeout(function () {
+          btn.textContent = 'Copy';
+          btn.classList.remove('copied');
+        }, 1500);
+      });
+    });
+  }
+
+  // ---- Code example: Run button (live decode) ----
+  var runBtn = document.getElementById('run-decode-btn');
+  if (runBtn) {
+    runBtn.addEventListener('click', function () {
+      var output = document.getElementById('decode-output');
+      try {
+        var decoded = bolt12.decodeOffer(SAMPLE_OFFER);
+        var lines = [];
+        lines.push('<span class="code-comment">// Decoded offer:</span>');
+        lines.push('hrp: <span class="code-string">\'' + decoded.hrp + '\'</span>');
+        lines.push('');
+        lines.push('<span class="code-comment">// TLV records:</span>');
+        for (var i = 0; i < decoded.records.length; i++) {
+          var rec = decoded.records[i];
+          var typeNum = Number(rec.type);
+          var info = TLV_INFO[typeNum];
+          var name = info ? info.name : 'unknown';
+          var val = info ? info.decode(rec.value) : toHex(rec.value);
+          lines.push('  type=<span class="code-keyword">' + typeNum + '</span> (' + escapeHtml(name) + ')  len=' + Number(rec.length));
+          lines.push('    <span class="code-string">' + escapeHtml(val) + '</span>');
+        }
+        lines.push('');
+        lines.push('<span class="code-comment">// offer_id (Merkle root):</span>');
+        lines.push('<span class="code-string">' + toHex(decoded.merkleRoot) + '</span>');
+        output.innerHTML = lines.join('\n');
+      } catch (e) {
+        output.innerHTML = '<span style="color:#ff8a8a;">Error: ' + escapeHtml(e.message) + '</span>';
+      }
+      runBtn.textContent = 'Re-run';
+    });
+  }
 })();

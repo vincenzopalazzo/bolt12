@@ -48,6 +48,111 @@
       </div>
     </section>
 
+    <!-- Code Examples -->
+    <section class="content-section">
+      <h2>Usage</h2>
+      <p>Install the library and start decoding BOLT12 messages in a few lines of code.</p>
+
+      <!-- Install -->
+      <div class="code-example">
+        <div class="code-header">
+          <span class="code-label">Terminal</span>
+          <button class="copy-btn" data-target="install-code">Copy</button>
+        </div>
+        <pre class="code-block" id="install-code"><span class="code-comment"># Install</span>
+npm install bolt12-decoder</pre>
+      </div>
+
+      <!-- Decode an offer -->
+      <div class="code-example">
+        <div class="code-header">
+          <span class="code-label">Decode an Offer</span>
+          <button class="copy-btn" data-target="decode-code">Copy</button>
+        </div>
+        <pre class="code-block" id="decode-code"><span class="code-keyword">import</span> { decodeOffer } <span class="code-keyword">from</span> <span class="code-string">'bolt12-decoder'</span>;
+
+<span class="code-keyword">const</span> offer = <span class="code-string">'lno1pgx9getnwss8vetrw3hhyuc...'</span>;
+<span class="code-keyword">const</span> decoded = decodeOffer(offer);
+
+console.log(decoded.hrp);        <span class="code-comment">// 'lno'</span>
+console.log(decoded.records);    <span class="code-comment">// TLV fields array</span>
+console.log(decoded.merkleRoot); <span class="code-comment">// offer_id (32 bytes)</span></pre>
+      </div>
+
+      <!-- Live output -->
+      <div class="code-example">
+        <div class="code-header">
+          <span class="code-label">Output</span>
+          <button class="run-btn" id="run-decode-btn">Run</button>
+        </div>
+        <pre class="code-block code-output" id="decode-output"><span class="code-comment">// Click "Run" to decode the sample offer live in your browser</span></pre>
+      </div>
+
+      <!-- Low-level TLV access -->
+      <div class="code-example">
+        <div class="code-header">
+          <span class="code-label">Low-level TLV Parsing</span>
+          <button class="copy-btn" data-target="tlv-code">Copy</button>
+        </div>
+        <pre class="code-block" id="tlv-code"><span class="code-keyword">import</span> { decodeBolt12, parseTlvStream, computeMerkleRoot } <span class="code-keyword">from</span> <span class="code-string">'bolt12-decoder'</span>;
+
+<span class="code-comment">// Step 1: Bech32 decode (works for any prefix: lno, lnr, lni, lnp)</span>
+<span class="code-keyword">const</span> { hrp, data } = decodeBolt12(offerString);
+
+<span class="code-comment">// Step 2: Parse the TLV stream</span>
+<span class="code-keyword">const</span> records = parseTlvStream(data);
+
+<span class="code-comment">// Step 3: Inspect individual fields</span>
+<span class="code-keyword">for</span> (<span class="code-keyword">const</span> rec <span class="code-keyword">of</span> records) {
+  console.log(<span class="code-string">`type=</span><span class="code-keyword">${</span>rec.type<span class="code-keyword">}</span> <span class="code-string">len=</span><span class="code-keyword">${</span>rec.length<span class="code-keyword">}</span><span class="code-string">`</span>);
+}
+
+<span class="code-comment">// Step 4: Compute the offer_id (Merkle root)</span>
+<span class="code-keyword">const</span> offerId = computeMerkleRoot(records);</pre>
+      </div>
+
+      <!-- Signature verification -->
+      <div class="code-example">
+        <div class="code-header">
+          <span class="code-label">Signature Verification</span>
+          <button class="copy-btn" data-target="sig-code">Copy</button>
+        </div>
+        <pre class="code-block" id="sig-code"><span class="code-keyword">import</span> { decodeBolt12, parseTlvStream, verifySignature } <span class="code-keyword">from</span> <span class="code-string">'bolt12-decoder'</span>;
+
+<span class="code-keyword">const</span> { data } = decodeBolt12(invoiceString);
+<span class="code-keyword">const</span> records = parseTlvStream(data);
+
+<span class="code-comment">// The signature TLV (type 240) and node pubkey are used</span>
+<span class="code-comment">// to verify the Schnorr signature over the Merkle root</span>
+<span class="code-keyword">const</span> sigRecord = records.find(r =&gt; r.type === 240n);
+<span class="code-keyword">const</span> nodeRecord = records.find(r =&gt; r.type === 176n); <span class="code-comment">// invoice_node_id</span>
+
+<span class="code-keyword">const</span> valid = verifySignature(
+  records.filter(r =&gt; r.type !== 240n), <span class="code-comment">// all fields except signature</span>
+  sigRecord.value,                       <span class="code-comment">// 64-byte Schnorr signature</span>
+  nodeRecord.value,                      <span class="code-comment">// 33-byte compressed pubkey</span>
+  <span class="code-string">'lightning'</span>, <span class="code-string">'invoice'</span>, <span class="code-string">'signature'</span>
+);</pre>
+      </div>
+
+      <!-- Payer proof (experimental) -->
+      <div class="code-example">
+        <div class="code-header">
+          <span class="code-label">Payer Proof (Experimental)</span>
+          <button class="copy-btn" data-target="payer-code">Copy</button>
+        </div>
+        <pre class="code-block" id="payer-code"><span class="code-keyword">import</span> { decodePayerProof } <span class="code-keyword">from</span> <span class="code-string">'bolt12-decoder'</span>;
+
+<span class="code-comment">// Decode a payer proof (lnp prefix, PR #1295)</span>
+<span class="code-keyword">const</span> { proof } = decodePayerProof(payerProofString);
+
+console.log(proof.preimage);       <span class="code-comment">// payment preimage (32 bytes)</span>
+console.log(proof.omittedTypes);   <span class="code-comment">// types selectively hidden</span>
+console.log(proof.leafHashes);     <span class="code-comment">// Merkle leaves for verification</span>
+console.log(proof.payerSignature); <span class="code-comment">// BIP-340 Schnorr signature</span></pre>
+      </div>
+    </section>
+
     <!-- What is BOLT12 -->
     <section class="content-section">
       <h2>What is BOLT12?</h2>

@@ -525,6 +525,91 @@ body {
   background: rgba(45, 212, 168, 0.25);
 }
 
+/* ---- Code Examples ---- */
+.code-example {
+  margin-bottom: 16px;
+}
+
+.code-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #1e2140;
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  padding: 8px 16px;
+}
+
+.code-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+}
+
+.copy-btn,
+.run-btn {
+  background: var(--accent-dim);
+  color: var(--accent);
+  border: none;
+  border-radius: 4px;
+  padding: 4px 12px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  cursor: pointer;
+  font-family: var(--sans);
+  transition: background 0.15s;
+}
+
+.copy-btn:hover,
+.run-btn:hover {
+  background: rgba(45, 212, 168, 0.3);
+}
+
+.copy-btn.copied {
+  background: rgba(45, 212, 168, 0.4);
+}
+
+.run-btn {
+  background: rgba(45, 212, 168, 0.25);
+}
+
+.code-block {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 0 0 8px 8px;
+  padding: 16px 20px;
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  line-height: 1.7;
+  overflow-x: auto;
+  margin: 0;
+  color: var(--text-primary);
+  white-space: pre;
+  tab-size: 2;
+}
+
+.code-output {
+  background: #0a0c16;
+  color: #9ca3af;
+  min-height: 60px;
+}
+
+.code-keyword {
+  color: #c792ea;
+}
+
+.code-string {
+  color: #c3e88d;
+}
+
+.code-comment {
+  color: #546e7a;
+  font-style: italic;
+}
+
 /* ---- Footer ---- */
 footer {
   text-align: center;
