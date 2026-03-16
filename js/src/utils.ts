@@ -21,6 +21,11 @@ export function toHex(buf: Uint8Array): string {
   return hex;
 }
 
+/** Check if a TLV type is a signature element (240-1000 inclusive). */
+export function isSignatureType(type: bigint): boolean {
+  return type >= 240n && type <= 1000n;
+}
+
 /** Compare two byte arrays lexicographically. */
 export function compareBytes(a: Uint8Array, b: Uint8Array): number {
   const len = Math.min(a.length, b.length);

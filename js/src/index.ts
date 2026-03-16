@@ -12,11 +12,18 @@ export { readBigSize, writeBigSize } from './bigsize.js';
 export { parseTlvStream, type TlvRecord } from './tlv.js';
 export { computeMerkleRoot, taggedHash, verifySignature } from './merkle.js';
 export { validateOffer } from './offer.js';
+export {
+  parsePayerProof,
+  reconstructMerkleRoot,
+  verifyPayerProof,
+  type PayerProofFields,
+} from './payer_proof.js';
 
 import { decodeBolt12, type Bolt12HRP } from './bech32.js';
 import { parseTlvStream, type TlvRecord } from './tlv.js';
 import { computeMerkleRoot, verifySignature } from './merkle.js';
 import { validateOffer } from './offer.js';
+import { parsePayerProof, type PayerProofFields } from './payer_proof.js';
 
 export interface DecodedOffer {
   hrp: Bolt12HRP;
@@ -43,4 +50,26 @@ export function decodeOffer(bolt12String: string): DecodedOffer {
   const merkleRoot = computeMerkleRoot(records);
 
   return { hrp, records, merkleRoot };
+}
+
+export interface DecodedPayerProof {
+  hrp: Bolt12HRP;
+  records: TlvRecord[];
+  proof: PayerProofFields;
+}
+
+/**
+ * Decode and validate a BOLT12 payer proof string (experimental, PR #1295).
+ */
+export function decodePayerProof(bolt12String: string): DecodedPayerProof {
+  const { hrp, data } = decodeBolt12(bolt12String);
+
+  if (hrp !== 'lnp') {
+    throw new Error(`Expected payer proof (lnp), got ${hrp}`);
+  }
+
+  const records = parseTlvStream(data);
+  const proof = parsePayerProof(records);
+
+  return { hrp, records, proof };
 }
