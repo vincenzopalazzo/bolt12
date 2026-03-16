@@ -6,6 +6,7 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc",
+    "build:web": "esbuild src/index.ts --bundle --format=iife --global-name=bolt12 --outfile=../website/bolt12-bundle.js --platform=browser",
     "test": "tsx test/offers-test.ts",
     "test:watch": "tsx --watch test/offers-test.ts"
   },
@@ -15,6 +16,7 @@
   },
   "devDependencies": {
     "@types/node": "^25.5.0",
+    "esbuild": "^0.27.4",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"
   },

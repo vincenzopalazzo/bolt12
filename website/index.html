@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BOLT12 - Lightning Offers Decoder</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app">
+    <!-- Hero -->
+    <header class="hero">
+      <h1>The Lightning Offer</h1>
+      <p class="subtitle">Decode, explore, and learn the inner workings of BOLT12 Lightning Network offers.</p>
+    </header>
+
+    <!-- Decoder -->
+    <section class="decoder-section">
+      <label for="bolt12-input">Enter a BOLT12 offer below:</label>
+      <textarea id="bolt12-input" spellcheck="false" placeholder="lno1..."></textarea>
+
+      <div id="decoded-display" class="decoded-display">
+        <p class="placeholder-text">Paste a BOLT12 offer above to decode it.</p>
+      </div>
+
+      <div id="info-panel" class="info-panel">
+        <p class="info-placeholder">Hover over a highlighted section above to see more information.</p>
+      </div>
+
+      <div id="error-panel" class="error-panel" style="display:none;"></div>
+
+      <div id="fields-table" class="fields-table" style="display:none;">
+        <h3>Decoded TLV Fields</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Type</th>
+              <th>Name</th>
+              <th>Length</th>
+              <th>Value</th>
+            </tr>
+          </thead>
+          <tbody id="fields-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- What is BOLT12 -->
+    <section class="content-section">
+      <h2>What is BOLT12?</h2>
+      <p>
+        BOLT12 is a protocol for requesting and receiving invoices over the Lightning Network itself.
+        It replaces the static, single-use <strong>BOLT11</strong> invoice with a reusable <strong>offer</strong>
+        that a merchant can publish once (as a QR code, link, or NFC tag), from which payers derive fresh invoices on demand.
+      </p>
+      <div class="comparison-grid">
+        <div class="comparison-card bolt11-card">
+          <h3>BOLT11 (Legacy)</h3>
+          <ul>
+            <li>Single-use invoices</li>
+            <li>Requires out-of-band server (LNURL)</li>
+            <li>Payee node ID exposed</li>
+            <li>No native proof of payment provenance</li>
+            <li>Hard to extend (fixed field encoding)</li>
+          </ul>
+        </div>
+        <div class="comparison-card bolt12-card">
+          <h3>BOLT12 (Offers)</h3>
+          <ul>
+            <li>Reusable offers</li>
+            <li>Native onion message exchange</li>
+            <li>Blinded paths for privacy</li>
+            <li>Payer proofs with selective disclosure</li>
+            <li>Extensible TLV encoding</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- Message Flow -->
+    <section class="content-section">
+      <h2>Message Flow</h2>
+      <p>BOLT12 defines a 4-step protocol between a merchant and a payer:</p>
+      <div class="flow-diagram">
+        <div class="flow-step">
+          <div class="flow-number">1</div>
+          <div class="flow-content">
+            <h4>Offer <code>lno</code></h4>
+            <p>Merchant publishes a static, reusable offer (QR code, web page, NFC). Contains description, amount, paths, and issuer identity.</p>
+          </div>
+        </div>
+        <div class="flow-arrow">&darr;</div>
+        <div class="flow-step">
+          <div class="flow-number">2</div>
+          <div class="flow-content">
+            <h4>Invoice Request <code>lnr</code></h4>
+            <p>Payer decodes the offer and sends an invoice request over an onion message. Includes payer identity, quantity, and reply path.</p>
+          </div>
+        </div>
+        <div class="flow-arrow">&darr;</div>
+        <div class="flow-step">
+          <div class="flow-number">3</div>
+          <div class="flow-content">
+            <h4>Invoice <code>lni</code></h4>
+            <p>Merchant validates the request, generates a fresh invoice with a unique payment hash, and sends it back over an onion message.</p>
+          </div>
+        </div>
+        <div class="flow-arrow">&darr;</div>
+        <div class="flow-step">
+          <div class="flow-number">4</div>
+          <div class="flow-content">
+            <h4>Payment (HTLC)</h4>
+            <p>Payer validates the invoice signature, then pays using standard HTLC routing (possibly via the blinded paths in the invoice).</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Offer Fields -->
+    <section class="content-section">
+      <h2>Offer Fields</h2>
+      <p>An offer is a TLV stream encoded with the <code>lno</code> prefix. These are the defined fields:</p>
+      <div class="spec-table-wrapper">
+        <table class="spec-table">
+          <thead>
+            <tr><th>Type</th><th>Field</th><th>Description</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>2</td><td>offer_chains</td><td>Which blockchain(s) the offer is valid for (default: Bitcoin mainnet)</td></tr>
+            <tr><td>4</td><td>offer_metadata</td><td>Arbitrary bytes for stateless request validation</td></tr>
+            <tr><td>6</td><td>offer_currency</td><td>ISO 4217 currency code (e.g., "USD") if amount is not in msat</td></tr>
+            <tr><td>8</td><td>offer_amount</td><td>Price in millisatoshis or currency units</td></tr>
+            <tr><td>10</td><td>offer_description</td><td>Human-readable description of the offer</td></tr>
+            <tr><td>12</td><td>offer_features</td><td>Feature bits the offer requires/supports</td></tr>
+            <tr><td>14</td><td>offer_absolute_expiry</td><td>Unix timestamp after which the offer expires</td></tr>
+            <tr><td>16</td><td>offer_paths</td><td>Blinded paths to reach the merchant</td></tr>
+            <tr><td>18</td><td>offer_issuer</td><td>Human-readable name of the issuer</td></tr>
+            <tr><td>20</td><td>offer_quantity_max</td><td>Maximum quantity a payer can request</td></tr>
+            <tr><td>22</td><td>offer_issuer_id</td><td>Merchant's compressed public key (33 bytes)</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Key Concepts -->
+    <section class="content-section">
+      <h2>Key Concepts</h2>
+      <div class="concepts-grid">
+        <div class="concept-card">
+          <h3>Blinded Paths</h3>
+          <p>
+            Blinded paths let a node receive messages and payments without revealing its node ID or
+            network position. A path consists of an introduction node, a blinding point, and encrypted
+            hops that only each successive node can decrypt. They appear in offers (for onion messages)
+            and invoices (for payment routing).
+          </p>
+        </div>
+        <div class="concept-card">
+          <h3>TLV Encoding</h3>
+          <p>
+            All BOLT12 messages use Type-Length-Value encoding with BigSize integers.
+            Fields must appear in ascending type order. Unknown odd types are ignored
+            (forward compatible); unknown even types cause rejection. This makes the
+            protocol natively extensible.
+          </p>
+        </div>
+        <div class="concept-card">
+          <h3>Merkle Signatures</h3>
+          <p>
+            Signatures use BIP-340 Schnorr over a Merkle root computed from all TLV fields.
+            Each field becomes a leaf paired with a nonce, then branches are built bottom-up.
+            This enables selective disclosure: either party can reveal specific fields to a
+            third party without exposing the entire message.
+          </p>
+        </div>
+        <div class="concept-card">
+          <h3>Bech32 (No Checksum)</h3>
+          <p>
+            BOLT12 strings use bech32-style encoding but without the 6-character checksum.
+            QR codes provide error detection, and cryptographic signatures serve as integrity
+            checks. The <code>+</code> character can split long strings across lines.
+            Uppercase is preferred for QR efficiency.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Learning Resources -->
+    <section class="content-section">
+      <h2>Learning Resources</h2>
+      <p class="subtitle">Further your Lightning Network knowledge with these resources:</p>
+      <div class="resources-grid">
+        <a href="https://github.com/lightning/bolts/blob/master/12-offer-encoding.md" class="resource-card" target="_blank" rel="noopener">
+          <h3>BOLT12 Specification</h3>
+          <p>The official spec for offer encoding, invoice requests, and invoices.</p>
+          <span class="resource-btn">Read Spec</span>
+        </a>
+        <a href="https://bolt12.org" class="resource-card" target="_blank" rel="noopener">
+          <h3>bolt12.org</h3>
+          <p>The community hub for BOLT12 adoption, tooling, and wallet support status.</p>
+          <span class="resource-btn">Visit</span>
+        </a>
+        <a href="https://github.com/lightning/bolts" class="resource-card" target="_blank" rel="noopener">
+          <h3>BOLTs Repository</h3>
+          <p>All Lightning Network protocol specifications in one place.</p>
+          <span class="resource-btn">Explore</span>
+        </a>
+        <a href="https://lightningdevkit.org/blog/bolt12-has-arrived/" class="resource-card" target="_blank" rel="noopener">
+          <h3>LDK BOLT12 Guide</h3>
+          <p>How Lightning Dev Kit implements BOLT12 offers and invoices.</p>
+          <span class="resource-btn">Learn More</span>
+        </a>
+        <a href="https://bitcoinops.org/en/topics/offers/" class="resource-card" target="_blank" rel="noopener">
+          <h3>Bitcoin Optech</h3>
+          <p>Technical overview and history of the offers protocol development.</p>
+          <span class="resource-btn">Read</span>
+        </a>
+        <a href="https://github.com/vincenzopalazzo/bolt12" class="resource-card" target="_blank" rel="noopener">
+          <h3>This Library</h3>
+          <p>Pure TypeScript BOLT12 decoder. Zero native dependencies. All test vectors passing.</p>
+          <span class="resource-btn">GitHub</span>
+        </a>
+      </div>
+    </section>
+
+    <!-- Footer -->
+    <footer>
+      <p>BOLT12 - The Lightning Offer</p>
+      <p class="footer-sub">Built with pure TypeScript. Powered by <a href="https://github.com/paulmillr/noble-curves" target="_blank" rel="noopener">@noble/curves</a>.</p>
+    </footer>
+  </div>
+
+  <script src="bolt12-bundle.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
