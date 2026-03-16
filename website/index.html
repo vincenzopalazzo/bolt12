@@ -58,6 +58,7 @@
           <button class="playground-tab active" data-example="ex1">Decode Offer</button>
           <button class="playground-tab" data-example="ex2">TLV Parsing</button>
           <button class="playground-tab" data-example="ex3">Validate</button>
+          <button class="playground-tab" data-example="ex4">Payer Proof</button>
         </div>
         <div class="playground-body">
           <div class="playground-editor-wrap">
@@ -219,6 +220,61 @@
             Uppercase is preferred for QR efficiency.
           </p>
         </div>
+      </div>
+    </section>
+
+    <!-- Payer Proofs -->
+    <section class="content-section">
+      <h2>Payer Proofs</h2>
+      <p>
+        A <strong>payer proof</strong> (<code>lnp</code>) allows a payer to prove they paid a specific invoice
+        while selectively disclosing only certain fields. This enables privacy-preserving proof of payment
+        for receipts, warranties, and dispute resolution.
+      </p>
+
+      <div class="flow-diagram" style="margin-bottom: 24px;">
+        <div class="flow-step">
+          <div class="flow-number">1</div>
+          <div class="flow-content">
+            <h4>Selective Disclosure</h4>
+            <p>The payer chooses which invoice fields to reveal (e.g., payment hash, node ID) and which to keep private (e.g., amount, description). Type 0 (invreq_metadata) is always kept secret.</p>
+          </div>
+        </div>
+        <div class="flow-arrow">&darr;</div>
+        <div class="flow-step">
+          <div class="flow-number">2</div>
+          <div class="flow-content">
+            <h4>Merkle Proof</h4>
+            <p>The proof includes the Merkle branch hashes needed to reconstruct the root from the disclosed fields, plus nonce hashes for each included TLV. The verifier can recompute the root and verify the invoice signature.</p>
+          </div>
+        </div>
+        <div class="flow-arrow">&darr;</div>
+        <div class="flow-step">
+          <div class="flow-number">3</div>
+          <div class="flow-content">
+            <h4>Payer Signature</h4>
+            <p>The payer signs <code>SHA256(note || merkle_root)</code> with their key, binding an optional note (e.g., "Payment for coffee") to the proof.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="spec-table-wrapper">
+        <table class="spec-table">
+          <thead>
+            <tr><th>Type</th><th>Field</th><th>Description</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>88</td><td>invreq_payer_id</td><td>Payer's public key (required, always included)</td></tr>
+            <tr><td>168</td><td>invoice_payment_hash</td><td>Payment hash from the invoice (required)</td></tr>
+            <tr><td>176</td><td>invoice_node_id</td><td>Merchant's node ID for signature verification (required)</td></tr>
+            <tr><td>240</td><td>signature</td><td>Invoice signature (BIP-340 Schnorr, 64 bytes)</td></tr>
+            <tr><td>242</td><td>preimage</td><td>Payment preimage (32 bytes, proves payment was completed)</td></tr>
+            <tr><td>244</td><td>omitted_tlvs</td><td>Marker numbers for omitted fields (BigSize array)</td></tr>
+            <tr><td>246</td><td>missing_hashes</td><td>Merkle branch hashes for tree reconstruction (32 bytes each)</td></tr>
+            <tr><td>248</td><td>leaf_hashes</td><td>Nonce hashes for included TLVs (32 bytes each)</td></tr>
+            <tr><td>250</td><td>payer_signature</td><td>Payer's BIP-340 signature + optional UTF-8 note</td></tr>
+          </tbody>
+        </table>
       </div>
     </section>
 

@@ -502,6 +502,28 @@
       '  }',
       '}',
     ].join('\n'),
+    ex4: [
+      '// Create a payer proof from an invoice + preimage',
+      'const result = bolt12.createPayerProof({',
+      '  invoiceHex: "00202a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a0a0b5465737420726566756e6452030186a05821035be5e9478209674a96e60f1f037f6176540fd001fa1d64694770c56a7709c42ca0e002ba72a6e8ba53e8b971ad0c9823968aef4d78ce8af255ab43dff83003c902fb8d035c4e0dec7215e26833938730e5e505aa62504da85ba57106a46b5a2404fc9d8e0202bb58b5feca505c74edc000d8282fc556e51a1024fc8e7d7e56c6f887c5c8d5f2002b00000000000000000000000000000000000000000000000000000000000000000000000000000000000000028f5304e2373e56ee7d774cb89e9f1afecf0ee7e3e3757f189908f069daa36c60002c0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000a21c00000001000003e8002a0000000000000064000000e8d4a510000000a4046553f100a820fbbbb6de2aa74c3c9570d2d8db1de31eadb66113c96034a7adb21243754d7683aa030186a0b02102bb58b5feca505c74edc000d8282fc556e51a1024fc8e7d7e56c6f887c5c8d5f2f0403cee1ed02def0c52ddf045482563de6da28ac951c2d76a13a082f8589178dab8fd80b504d63faa1008c7252ceac78d144caa0a0abc7225e1519b9d3c23d3d503",',
+      '  preimageHex: "6464646464646464646464646464646464646464646464646464646464646464",',
+      '  payerSecretKeyHex: "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",',
+      '  note: "Payment for coffee",',
+      '});',
+      '',
+      'console.log("--- Payer Proof Created ---");',
+      'console.log("merkle root:", toHex(result.merkleRoot));',
+      'console.log("proof bech32:", result.proofBech32.slice(0, 80) + "...");',
+      '',
+      '// Decode and verify the proof',
+      'const decoded = bolt12.decodePayerProof(result.proofBech32);',
+      'const verification = bolt12.verifyPayerProof(decoded.proof);',
+      'console.log("\\n--- Verification ---");',
+      'console.log("valid:", verification.valid);',
+      'console.log("payer note:", decoded.proof.payerNote);',
+      'console.log("included fields:", decoded.proof.includedRecords.length);',
+      'console.log("omitted markers:", decoded.proof.omittedTlvs.length);',
+    ].join('\n'),
   };
 
   var editor = document.getElementById('playground-editor');
