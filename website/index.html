@@ -48,87 +48,37 @@
       </div>
     </section>
 
-    <!-- Code Examples -->
+    <!-- Playground -->
     <section class="content-section">
-      <h2>Usage</h2>
-      <p>Install the library and start decoding BOLT12 messages. Every snippet below runs live in your browser.</p>
+      <h2>Try it</h2>
+      <p>Edit the code below and see the result instantly. The <code>bolt12</code> library runs entirely in your browser.</p>
 
-      <!-- Install -->
-      <div class="code-example">
-        <div class="code-header">
-          <span class="code-label">Terminal</span>
-          <button class="copy-btn" data-target="install-code">Copy</button>
+      <div class="playground">
+        <div class="playground-tabs">
+          <button class="playground-tab active" data-example="ex1">Decode Offer</button>
+          <button class="playground-tab" data-example="ex2">TLV Parsing</button>
+          <button class="playground-tab" data-example="ex3">Validate</button>
         </div>
-        <pre class="code-block" id="install-code">npm install bolt12-decoder</pre>
+        <div class="playground-body">
+          <div class="playground-editor-wrap">
+            <div class="playground-editor-header">
+              <span class="code-label">Editor</span>
+            </div>
+            <textarea id="playground-editor" class="playground-editor" spellcheck="false"></textarea>
+          </div>
+          <div class="playground-output-wrap">
+            <div class="playground-output-header">
+              <span class="code-label">Output</span>
+              <button class="run-btn" id="playground-run">Run</button>
+            </div>
+            <pre class="playground-output" id="playground-output"></pre>
+          </div>
+        </div>
       </div>
 
-      <!-- Example 1: Decode an offer -->
-      <div class="code-example">
-        <div class="code-header">
-          <span class="code-label">Decode an Offer</span>
-          <button class="copy-btn" data-target="ex1-code">Copy</button>
-        </div>
-        <pre class="code-block" id="ex1-code">import { decodeOffer } from 'bolt12-decoder';
-
-const offer = 'lno1pgx9getnwss8vetrw3hhyucjy358garswvaz7tmzdak8gvfj9ehhyeeqgf85c4p3xgsxjmnyw4ehgunfv4e3vggzamrjghtt05kvkvpcp0a79gmy3nt6jsn98ad2xs8de6sl9qmgvcvs';
-const decoded = decodeOffer(offer);
-
-console.log('hrp:', decoded.hrp);
-console.log('records:', decoded.records.length, 'fields');
-for (const rec of decoded.records) {
-  console.log(`  type=${rec.type} len=${rec.length}`);
-}
-console.log('offer_id:', toHex(decoded.merkleRoot));</pre>
-        <pre class="code-block code-output" id="ex1-output"></pre>
-      </div>
-
-      <!-- Example 2: Low-level TLV parsing -->
-      <div class="code-example">
-        <div class="code-header">
-          <span class="code-label">Low-level TLV Parsing</span>
-          <button class="copy-btn" data-target="ex2-code">Copy</button>
-        </div>
-        <pre class="code-block" id="ex2-code">import { decodeBolt12, parseTlvStream, computeMerkleRoot } from 'bolt12-decoder';
-
-const { hrp, data } = decodeBolt12(offerString);
-const records = parseTlvStream(data);
-
-// Read individual fields
-const description = records.find(r => r.type === 10n);
-console.log('prefix:', hrp);
-console.log('description:', new TextDecoder().decode(description.value));
-console.log('offer_id:', toHex(computeMerkleRoot(records)));</pre>
-        <pre class="code-block code-output" id="ex2-output"></pre>
-      </div>
-
-      <!-- Example 3: Validate and inspect fields -->
-      <div class="code-example">
-        <div class="code-header">
-          <span class="code-label">Field Inspection</span>
-          <button class="copy-btn" data-target="ex3-code">Copy</button>
-        </div>
-        <pre class="code-block" id="ex3-code">import { decodeBolt12, parseTlvStream, validateOffer } from 'bolt12-decoder';
-
-const { hrp, data } = decodeBolt12(offerString);
-const records = parseTlvStream(data);
-
-// Validate against BOLT12 spec rules
-try {
-  validateOffer(records);
-  console.log('Valid offer!');
-} catch (e) {
-  console.log('Invalid:', e.message);
-}
-
-// Decode each field with human-readable names
-const NAMES = { 2:'chains', 6:'currency', 8:'amount', 10:'description', 18:'issuer', 22:'issuer_id' };
-for (const rec of records) {
-  const name = NAMES[Number(rec.type)] || 'type_' + rec.type;
-  const isText = [10n, 18n].includes(rec.type);
-  const val = isText ? new TextDecoder().decode(rec.value) : toHex(rec.value);
-  console.log(`${name}: ${val}`);
-}</pre>
-        <pre class="code-block code-output" id="ex3-output"></pre>
+      <div class="install-hint">
+        <span class="code-label">Install in your project</span>
+        <code>npm install bolt12-decoder</code>
       </div>
     </section>
 

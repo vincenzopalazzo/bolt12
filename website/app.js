@@ -438,40 +438,90 @@
   // Initial decode
   decodeAndRender(SAMPLE_OFFER);
 
-  // ---- Code example: Copy buttons ----
-  var copyBtns = document.querySelectorAll('.copy-btn');
-  for (var b = 0; b < copyBtns.length; b++) {
-    copyBtns[b].addEventListener('click', function () {
-      var btn = this;
-      var targetId = btn.getAttribute('data-target');
-      var codeEl = document.getElementById(targetId);
-      if (!codeEl) return;
-      var text = codeEl.textContent;
-      navigator.clipboard.writeText(text).then(function () {
-        btn.textContent = 'Copied!';
-        btn.classList.add('copied');
-        setTimeout(function () {
-          btn.textContent = 'Copy';
-          btn.classList.remove('copied');
-        }, 1500);
-      });
-    });
-  }
+  // ---- Playground ----
+  var EXAMPLES = {
+    ex1: [
+      '// Decode a BOLT12 offer',
+      'const offer = "lno1pgx9getnwss8vetrw3hhyucjy358garswvaz7tmzdak8gvfj9ehhyeeqgf85c4p3xgsxjmnyw4ehgunfv4e3vggzamrjghtt05kvkvpcp0a79gmy3nt6jsn98ad2xs8de6sl9qmgvcvs";',
+      'const decoded = bolt12.decodeOffer(offer);',
+      '',
+      'console.log("hrp:", decoded.hrp);',
+      'console.log("records:", decoded.records.length, "fields");',
+      '',
+      'for (const rec of decoded.records) {',
+      '  const info = TLV_INFO[Number(rec.type)];',
+      '  const name = info ? info.name : "unknown";',
+      '  console.log("  " + name, "type=" + rec.type, "len=" + rec.length);',
+      '}',
+      '',
+      'console.log("offer_id:", toHex(decoded.merkleRoot));',
+    ].join('\n'),
+    ex2: [
+      '// Low-level: bech32 decode, TLV parse, field extraction',
+      'const offerStr = "lno1pgx9getnwss8vetrw3hhyucjy358garswvaz7tmzdak8gvfj9ehhyeeqgf85c4p3xgsxjmnyw4ehgunfv4e3vggzamrjghtt05kvkvpcp0a79gmy3nt6jsn98ad2xs8de6sl9qmgvcvs";',
+      '',
+      '// Step 1: Bech32 decode',
+      'const { hrp, data } = bolt12.decodeBolt12(offerStr);',
+      'console.log("prefix:", hrp);',
+      '',
+      '// Step 2: Parse TLV stream',
+      'const records = bolt12.parseTlvStream(data);',
+      'console.log("total fields:", records.length);',
+      '',
+      '// Step 3: Extract description (type 10)',
+      'const desc = records.find(r => r.type === 10n);',
+      'console.log("description:", new TextDecoder().decode(desc.value));',
+      '',
+      '// Step 4: Compute offer_id',
+      'const root = bolt12.computeMerkleRoot(records);',
+      'console.log("merkle root:", toHex(root));',
+    ].join('\n'),
+    ex3: [
+      '// Validate an offer against BOLT12 spec rules',
+      'const offerStr = "lno1pgx9getnwss8vetrw3hhyucjy358garswvaz7tmzdak8gvfj9ehhyeeqgf85c4p3xgsxjmnyw4ehgunfv4e3vggzamrjghtt05kvkvpcp0a79gmy3nt6jsn98ad2xs8de6sl9qmgvcvs";',
+      'const { data } = bolt12.decodeBolt12(offerStr);',
+      'const records = bolt12.parseTlvStream(data);',
+      '',
+      'try {',
+      '  bolt12.validateOffer(records);',
+      '  console.log("Valid offer!");',
+      '} catch (e) {',
+      '  console.log("Invalid:", e.message);',
+      '}',
+      '',
+      '// Print all fields with human-readable names',
+      'const NAMES = {',
+      '  2:"chains", 6:"currency", 8:"amount",',
+      '  10:"description", 18:"issuer", 22:"issuer_id"',
+      '};',
+      'for (const rec of records) {',
+      '  const name = NAMES[Number(rec.type)] || "type_" + rec.type;',
+      '  const isText = rec.type === 10n || rec.type === 18n;',
+      '  const val = isText',
+      '    ? new TextDecoder().decode(rec.value)',
+      '    : toHex(rec.value);',
+      '  console.log(name + ":", val);',
+      '}',
+    ].join('\n'),
+  };
 
-  // ---- Live code examples: run each snippet and capture console.log ----
-  function runExample(outputId, fn) {
-    var outputEl = document.getElementById(outputId);
-    if (!outputEl) return;
+  var editor = document.getElementById('playground-editor');
+  var outputEl = document.getElementById('playground-output');
+  var runBtn = document.getElementById('playground-run');
+  var tabs = document.querySelectorAll('.playground-tab');
+
+  function runPlayground() {
+    var code = editor.value;
     var lines = [];
     var fakeConsole = {
       log: function () {
         var parts = [];
-        for (var i = 0; i < arguments.length; i++) {
-          var v = arguments[i];
+        for (var a = 0; a < arguments.length; a++) {
+          var v = arguments[a];
           if (v instanceof Uint8Array) {
             parts.push(toHex(v));
           } else if (typeof v === 'object' && v !== null) {
-            try { parts.push(JSON.stringify(v)); } catch(e) { parts.push(String(v)); }
+            try { parts.push(JSON.stringify(v, null, 2)); } catch(e) { parts.push(String(v)); }
           } else {
             parts.push(String(v));
           }
@@ -480,55 +530,54 @@
       }
     };
     try {
-      fn(fakeConsole);
-      outputEl.innerHTML = '<span class="code-comment">// Output:</span>\n' + lines.join('\n');
+      // Strip import statements (we have bolt12 as global)
+      var cleaned = code.replace(/^import\s+.*from\s+['"].*['"];?\s*$/gm, '');
+      var fn = new Function('console', 'bolt12', 'toHex', 'TLV_INFO', 'TextDecoder', cleaned);
+      fn(fakeConsole, bolt12, toHex, TLV_INFO, TextDecoder);
+      outputEl.innerHTML = lines.join('\n');
     } catch (e) {
-      outputEl.innerHTML = '<span style="color:#ff8a8a;">Error: ' + escapeHtml(e.message) + '</span>';
+      outputEl.innerHTML = '<span class="out-error">' + escapeHtml(e.name + ': ' + e.message) + '</span>';
     }
   }
 
-  // Example 1: decodeOffer
-  runExample('ex1-output', function (console) {
-    var decoded = bolt12.decodeOffer(SAMPLE_OFFER);
-    console.log('hrp:', decoded.hrp);
-    console.log('records:', decoded.records.length, 'fields');
-    for (var i = 0; i < decoded.records.length; i++) {
-      var rec = decoded.records[i];
-      console.log('  type=' + rec.type + ' len=' + rec.length);
+  function setExample(id) {
+    editor.value = EXAMPLES[id] || '';
+    for (var t = 0; t < tabs.length; t++) {
+      tabs[t].classList.toggle('active', tabs[t].getAttribute('data-example') === id);
     }
-    console.log('offer_id:', toHex(decoded.merkleRoot));
-  });
+    runPlayground();
+  }
 
-  // Example 2: Low-level TLV parsing
-  runExample('ex2-output', function (console) {
-    var result = bolt12.decodeBolt12(SAMPLE_OFFER);
-    var records = bolt12.parseTlvStream(result.data);
-    var description = null;
-    for (var i = 0; i < records.length; i++) {
-      if (records[i].type === 10n) { description = records[i]; break; }
-    }
-    console.log('prefix:', result.hrp);
-    console.log('description:', new TextDecoder().decode(description.value));
-    console.log('offer_id:', toHex(bolt12.computeMerkleRoot(records)));
-  });
+  // Tab click
+  for (var t = 0; t < tabs.length; t++) {
+    tabs[t].addEventListener('click', function () {
+      setExample(this.getAttribute('data-example'));
+    });
+  }
 
-  // Example 3: Validate and inspect fields
-  runExample('ex3-output', function (console) {
-    var result = bolt12.decodeBolt12(SAMPLE_OFFER);
-    var records = bolt12.parseTlvStream(result.data);
-    try {
-      bolt12.validateOffer(records);
-      console.log('Valid offer!');
-    } catch (e) {
-      console.log('Invalid:', e.message);
-    }
-    var NAMES = { 2:'chains', 6:'currency', 8:'amount', 10:'description', 18:'issuer', 22:'issuer_id' };
-    for (var i = 0; i < records.length; i++) {
-      var rec = records[i];
-      var name = NAMES[Number(rec.type)] || 'type_' + rec.type;
-      var isText = rec.type === 10n || rec.type === 18n;
-      var val = isText ? new TextDecoder().decode(rec.value) : toHex(rec.value);
-      console.log(name + ': ' + val);
-    }
-  });
+  // Run button
+  if (runBtn) {
+    runBtn.addEventListener('click', runPlayground);
+  }
+
+  // Ctrl+Enter to run
+  if (editor) {
+    editor.addEventListener('keydown', function (e) {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        e.preventDefault();
+        runPlayground();
+      }
+      // Tab key inserts spaces
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        var start = this.selectionStart;
+        var end = this.selectionEnd;
+        this.value = this.value.substring(0, start) + '  ' + this.value.substring(end);
+        this.selectionStart = this.selectionEnd = start + 2;
+      }
+    });
+  }
+
+  // Load first example and run it
+  setExample('ex1');
 })();

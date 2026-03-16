@@ -525,89 +525,153 @@ body {
   background: rgba(45, 212, 168, 0.25);
 }
 
-/* ---- Code Examples ---- */
-.code-example {
-  margin-bottom: 16px;
+/* ---- Playground ---- */
+.playground {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  margin-bottom: 20px;
 }
 
-.code-header {
+.playground-tabs {
+  display: flex;
+  background: #1a1d35;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+}
+
+.playground-tab {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-family: var(--sans);
+  font-size: 0.82rem;
+  font-weight: 500;
+  padding: 10px 20px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: color 0.15s, border-color 0.15s;
+  white-space: nowrap;
+}
+
+.playground-tab:hover {
+  color: var(--text-primary);
+}
+
+.playground-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.playground-body {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  min-height: 340px;
+}
+
+.playground-editor-wrap,
+.playground-output-wrap {
+  display: flex;
+  flex-direction: column;
+}
+
+.playground-editor-wrap {
+  border-right: 1px solid var(--border);
+}
+
+.playground-editor-header,
+.playground-output-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  padding: 6px 14px;
   background: #1e2140;
-  border: 1px solid var(--border);
-  border-bottom: none;
-  border-radius: 8px 8px 0 0;
-  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
 }
 
 .code-label {
-  font-size: 0.75rem;
+  font-size: 0.7rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--text-secondary);
 }
 
-.copy-btn,
 .run-btn {
-  background: var(--accent-dim);
-  color: var(--accent);
+  background: var(--accent);
+  color: #0d0f1b;
   border: none;
   border-radius: 4px;
-  padding: 4px 12px;
+  padding: 4px 14px;
   font-size: 0.75rem;
-  font-weight: 500;
+  font-weight: 600;
   cursor: pointer;
   font-family: var(--sans);
-  transition: background 0.15s;
+  transition: opacity 0.15s;
 }
 
-.copy-btn:hover,
 .run-btn:hover {
-  background: rgba(45, 212, 168, 0.3);
+  opacity: 0.85;
 }
 
-.copy-btn.copied {
-  background: rgba(45, 212, 168, 0.4);
-}
-
-.run-btn {
-  background: rgba(45, 212, 168, 0.25);
-}
-
-.code-block {
+.playground-editor {
+  flex: 1;
+  width: 100%;
   background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: 0 0 8px 8px;
-  padding: 16px 20px;
+  color: var(--text-primary);
   font-family: var(--mono);
   font-size: 0.82rem;
-  line-height: 1.7;
-  overflow-x: auto;
-  margin: 0;
-  color: var(--text-primary);
-  white-space: pre;
+  line-height: 1.65;
+  padding: 14px 16px;
+  border: none;
+  outline: none;
+  resize: none;
   tab-size: 2;
+  white-space: pre;
+  overflow: auto;
 }
 
-.code-output {
+.playground-output {
+  flex: 1;
   background: #0a0c16;
-  color: #9ca3af;
-  min-height: 60px;
+  color: #b0b8c4;
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  line-height: 1.65;
+  padding: 14px 16px;
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 
-.code-keyword {
-  color: #c792ea;
+.playground-output .out-error {
+  color: #ff8a8a;
 }
 
-.code-string {
-  color: #c3e88d;
-}
-
-.code-comment {
+.playground-output .out-label {
   color: #546e7a;
   font-style: italic;
+}
+
+.install-hint {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 20px;
+}
+
+.install-hint code {
+  background: var(--bg-surface);
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  color: var(--accent);
 }
 
 /* ---- Footer ---- */
@@ -650,6 +714,23 @@ footer a:hover {
 
   .resources-grid {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .playground-body {
+    grid-template-columns: 1fr;
+  }
+
+  .playground-editor-wrap {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .playground-editor {
+    min-height: 200px;
+  }
+
+  .playground-output {
+    min-height: 150px;
   }
 }
 
