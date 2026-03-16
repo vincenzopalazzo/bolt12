@@ -24,11 +24,15 @@ var bolt12 = (() => {
     computeMerkleRoot: () => computeMerkleRoot,
     decodeBolt12: () => decodeBolt12,
     decodeOffer: () => decodeOffer,
+    decodePayerProof: () => decodePayerProof,
     encodeBolt12: () => encodeBolt12,
+    parsePayerProof: () => parsePayerProof,
     parseTlvStream: () => parseTlvStream,
     readBigSize: () => readBigSize,
+    reconstructMerkleRoot: () => reconstructMerkleRoot,
     taggedHash: () => taggedHash2,
     validateOffer: () => validateOffer,
+    verifyPayerProof: () => verifyPayerProof,
     verifySignature: () => verifySignature,
     writeBigSize: () => writeBigSize
   });
@@ -2943,6 +2947,280 @@ var bolt12 = (() => {
     return { records, hasDescription, hasAmount, hasCurrency, hasIssuerId, hasPaths };
   }
 
+  // src/payer_proof.ts
+  var encoder2 = new TextEncoder();
+  var PP_PREIMAGE = 242n;
+  var PP_OMITTED_TLVS = 244n;
+  var PP_MISSING_HASHES = 246n;
+  var PP_LEAF_HASHES = 248n;
+  var PP_PAYER_SIGNATURE = 250n;
+  var INVREQ_METADATA = 0n;
+  var INVREQ_PAYER_ID = 88n;
+  var INVOICE_PAYMENT_HASH = 168n;
+  var INVOICE_NODE_ID = 176n;
+  var SIGNATURE = 240n;
+  function isSignatureType(type) {
+    return type >= 240n && type <= 1000n;
+  }
+  function parseBigSizeArray(data) {
+    const result = [];
+    let offset = 0;
+    while (offset < data.length) {
+      const { value, bytesRead } = readBigSize(data, offset);
+      result.push(value);
+      offset += bytesRead;
+    }
+    return result;
+  }
+  function parseSha256Array(data) {
+    if (data.length % 32 !== 0) {
+      throw new Error("Hash array length must be a multiple of 32");
+    }
+    const result = [];
+    for (let i = 0; i < data.length; i += 32) {
+      result.push(data.slice(i, i + 32));
+    }
+    return result;
+  }
+  function compareBytes2(a, b) {
+    for (let i = 0; i < Math.min(a.length, b.length); i++) {
+      if (a[i] < b[i]) return -1;
+      if (a[i] > b[i]) return 1;
+    }
+    return a.length - b.length;
+  }
+  function branchHash2(a, b) {
+    const tag = encoder2.encode("LnBranch");
+    const [smaller, larger] = compareBytes2(a, b) < 0 ? [a, b] : [b, a];
+    return taggedHash2(tag, concatBytes(smaller, larger));
+  }
+  function leafBranch(tlvBytes, nonceHash) {
+    const leafTag = encoder2.encode("LnLeaf");
+    const leaf = taggedHash2(leafTag, tlvBytes);
+    return branchHash2(leaf, nonceHash);
+  }
+  function tlvToBytes2(record) {
+    const typeBytes = writeBigSize(record.type);
+    const lengthBytes = writeBigSize(record.length);
+    return concatBytes(typeBytes, lengthBytes, record.value);
+  }
+  function parsePayerProof(records) {
+    const includedRecords = [];
+    let signature = null;
+    let preimage = null;
+    let omittedTlvsRaw = null;
+    let missingHashesRaw = null;
+    let leafHashesRaw = null;
+    let payerSignatureRaw = null;
+    let invoicePaymentHash = null;
+    let invoiceNodeId = null;
+    let payerId = null;
+    for (const record of records) {
+      const type = record.type;
+      if (type === INVREQ_METADATA) {
+        throw new Error("Payer proof MUST NOT include invreq_metadata (type 0)");
+      }
+      if (type === INVREQ_PAYER_ID) {
+        payerId = record.value;
+      } else if (type === INVOICE_PAYMENT_HASH) {
+        invoicePaymentHash = record.value;
+      } else if (type === INVOICE_NODE_ID) {
+        invoiceNodeId = record.value;
+      }
+      if (type === SIGNATURE) {
+        if (record.value.length !== 64) {
+          throw new Error("Invalid signature: expected 64 bytes");
+        }
+        signature = record.value;
+      } else if (type === PP_PREIMAGE) {
+        if (record.value.length !== 32) {
+          throw new Error("Invalid preimage: expected 32 bytes");
+        }
+        preimage = record.value;
+      } else if (type === PP_OMITTED_TLVS) {
+        omittedTlvsRaw = record.value;
+      } else if (type === PP_MISSING_HASHES) {
+        missingHashesRaw = record.value;
+      } else if (type === PP_LEAF_HASHES) {
+        leafHashesRaw = record.value;
+      } else if (type === PP_PAYER_SIGNATURE) {
+        if (record.value.length < 64) {
+          throw new Error("Invalid payer_signature: expected at least 64 bytes");
+        }
+        payerSignatureRaw = record.value;
+      } else if (!isSignatureType(type)) {
+        includedRecords.push(record);
+      }
+    }
+    if (!payerId) throw new Error("Missing invreq_payer_id");
+    if (!invoicePaymentHash) throw new Error("Missing invoice_payment_hash");
+    if (!invoiceNodeId) throw new Error("Missing invoice_node_id");
+    if (!signature) throw new Error("Missing signature");
+    if (!payerSignatureRaw) throw new Error("Missing payer_signature");
+    const omittedTlvs = omittedTlvsRaw ? parseBigSizeArray(omittedTlvsRaw) : [];
+    validateOmittedTlvs(omittedTlvs, includedRecords);
+    const missingHashes = missingHashesRaw ? parseSha256Array(missingHashesRaw) : [];
+    const leafHashes = leafHashesRaw ? parseSha256Array(leafHashesRaw) : [];
+    if (leafHashes.length !== includedRecords.length) {
+      throw new Error(
+        `leaf_hashes count (${leafHashes.length}) must match included non-signature TLV count (${includedRecords.length})`
+      );
+    }
+    if (preimage) {
+      const computedHash = sha256(preimage);
+      const hashHex = Buffer.from(computedHash).toString("hex");
+      const expectedHex = Buffer.from(invoicePaymentHash).toString("hex");
+      if (hashHex !== expectedHex) {
+        throw new Error("SHA256(preimage) does not match invoice_payment_hash");
+      }
+    }
+    const payerSignature = payerSignatureRaw.slice(0, 64);
+    const payerNoteBytes = payerSignatureRaw.slice(64);
+    let payerNote = "";
+    if (payerNoteBytes.length > 0) {
+      const decoder = new TextDecoder("utf-8", { fatal: true });
+      try {
+        payerNote = decoder.decode(payerNoteBytes);
+      } catch {
+        throw new Error("Invalid UTF-8 in payer_signature note");
+      }
+    }
+    return {
+      includedRecords,
+      signature,
+      preimage: preimage || new Uint8Array(32),
+      omittedTlvs,
+      missingHashes,
+      leafHashes,
+      payerSignature,
+      payerNote,
+      invoicePaymentHash,
+      invoiceNodeId,
+      payerId
+    };
+  }
+  function validateOmittedTlvs(omittedTlvs, includedRecords) {
+    for (let i = 1; i < omittedTlvs.length; i++) {
+      if (omittedTlvs[i] <= omittedTlvs[i - 1]) {
+        throw new Error("omitted_tlvs must be in strict ascending order");
+      }
+    }
+    if (omittedTlvs.includes(0n)) {
+      throw new Error("omitted_tlvs must not contain 0");
+    }
+    for (const marker of omittedTlvs) {
+      if (isSignatureType(marker)) {
+        throw new Error(`omitted_tlvs must not contain signature type number ${marker}`);
+      }
+    }
+    const includedTypes = new Set(includedRecords.map((r) => r.type));
+    for (const marker of omittedTlvs) {
+      if (includedTypes.has(marker)) {
+        throw new Error(`omitted_tlvs must not contain included TLV type ${marker}`);
+      }
+    }
+    if (includedRecords.length > 0) {
+      const maxIncluded = includedRecords[includedRecords.length - 1].type;
+      const largerMarkers = omittedTlvs.filter((m) => m > maxIncluded);
+      if (largerMarkers.length > 1) {
+        throw new Error("omitted_tlvs must not contain more than one marker larger than the largest included TLV");
+      }
+    }
+  }
+  function reconstructMerkleRoot(proof) {
+    const allNodes = [];
+    let includedIdx = 0;
+    let omittedIdx = 0;
+    while (includedIdx < proof.includedRecords.length || omittedIdx < proof.omittedTlvs.length) {
+      const includedType = includedIdx < proof.includedRecords.length ? proof.includedRecords[includedIdx].type : BigInt(Number.MAX_SAFE_INTEGER);
+      const omittedMarker = omittedIdx < proof.omittedTlvs.length ? proof.omittedTlvs[omittedIdx] : BigInt(Number.MAX_SAFE_INTEGER);
+      if (includedType < omittedMarker) {
+        allNodes.push({
+          type: "included",
+          record: proof.includedRecords[includedIdx],
+          nonceHash: proof.leafHashes[includedIdx]
+        });
+        includedIdx++;
+      } else {
+        allNodes.push({ type: "omitted" });
+        omittedIdx++;
+      }
+    }
+    let missingIdx = 0;
+    let nodes = [];
+    for (const node of allNodes) {
+      if (node.type === "included" && node.record && node.nonceHash) {
+        const tlvBytes = tlvToBytes2(node.record);
+        nodes.push(leafBranch(tlvBytes, node.nonceHash));
+      } else {
+        nodes.push(new Uint8Array(0));
+      }
+    }
+    while (nodes.length > 1) {
+      const parents = [];
+      let i = 0;
+      while (i < nodes.length) {
+        if (i + 1 < nodes.length) {
+          const left = nodes[i];
+          const right = nodes[i + 1];
+          const leftEmpty = left.length === 0;
+          const rightEmpty = right.length === 0;
+          if (leftEmpty && rightEmpty) {
+            parents.push(new Uint8Array(0));
+          } else if (leftEmpty) {
+            if (missingIdx >= proof.missingHashes.length) {
+              throw new Error("Not enough missing_hashes to reconstruct merkle tree");
+            }
+            parents.push(branchHash2(proof.missingHashes[missingIdx++], right));
+          } else if (rightEmpty) {
+            if (missingIdx >= proof.missingHashes.length) {
+              throw new Error("Not enough missing_hashes to reconstruct merkle tree");
+            }
+            parents.push(branchHash2(left, proof.missingHashes[missingIdx++]));
+          } else {
+            parents.push(branchHash2(left, right));
+          }
+          i += 2;
+        } else {
+          parents.push(nodes[i]);
+          i += 1;
+        }
+      }
+      nodes = parents;
+    }
+    if (missingIdx !== proof.missingHashes.length) {
+      throw new Error(
+        `Excess missing_hashes: used ${missingIdx} of ${proof.missingHashes.length}`
+      );
+    }
+    if (nodes.length === 0 || nodes[0].length === 0) {
+      throw new Error("Failed to reconstruct merkle root");
+    }
+    return nodes[0];
+  }
+  function verifyPayerProof(proof) {
+    try {
+      const merkleRoot = reconstructMerkleRoot(proof);
+      const invoiceSigTag = encoder2.encode("lightninginvoicesignature");
+      const invoiceSigMsg = taggedHash2(invoiceSigTag, merkleRoot);
+      const nodeIdX = proof.invoiceNodeId.length === 33 ? proof.invoiceNodeId.slice(1) : proof.invoiceNodeId;
+      const invoiceSigValid = schnorr.verify(proof.signature, invoiceSigMsg, nodeIdX);
+      if (!invoiceSigValid) {
+        return { valid: false, merkleRoot, error: "Invalid invoice signature" };
+      }
+      const noteBytes = encoder2.encode(proof.payerNote);
+      const payerMsg = sha256(concatBytes(noteBytes, merkleRoot));
+      const payerIdX = proof.payerId.length === 33 ? proof.payerId.slice(1) : proof.payerId;
+      const payerSigValid = schnorr.verify(proof.payerSignature, payerMsg, payerIdX);
+      if (!payerSigValid) {
+        return { valid: false, merkleRoot, error: "Invalid payer signature" };
+      }
+      return { valid: true, merkleRoot };
+    } catch (e) {
+      return { valid: false, merkleRoot: new Uint8Array(32), error: e.message };
+    }
+  }
+
   // src/index.ts
   function decodeOffer(bolt12String) {
     const { hrp, data } = decodeBolt12(bolt12String);
@@ -2953,6 +3231,15 @@ var bolt12 = (() => {
     validateOffer(records);
     const merkleRoot = computeMerkleRoot(records);
     return { hrp, records, merkleRoot };
+  }
+  function decodePayerProof(bolt12String) {
+    const { hrp, data } = decodeBolt12(bolt12String);
+    if (hrp !== "lnp") {
+      throw new Error(`Expected payer proof (lnp), got ${hrp}`);
+    }
+    const records = parseTlvStream(data);
+    const proof = parsePayerProof(records);
+    return { hrp, records, proof };
   }
   return __toCommonJS(index_exports);
 })();

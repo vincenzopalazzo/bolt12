@@ -7,6 +7,7 @@
 
   // ---- TLV type metadata ----
   var TLV_INFO = {
+    // Offer fields
     2:  { name: 'offer_chains',        color: 'var(--color-chains)',     decode: decodeChains },
     4:  { name: 'offer_metadata',      color: 'var(--color-metadata)',   decode: decodeHex },
     6:  { name: 'offer_currency',      color: 'var(--color-currency)',   decode: decodeUtf8 },
@@ -18,6 +19,32 @@
     18: { name: 'offer_issuer',        color: 'var(--color-issuer)',     decode: decodeUtf8 },
     20: { name: 'offer_quantity_max',  color: 'var(--color-quantity)',   decode: decodeQuantity },
     22: { name: 'offer_issuer_id',     color: 'var(--color-issuer-id)', decode: decodeHex },
+    // Invoice request fields
+    0:  { name: 'invreq_metadata',     color: 'var(--color-metadata)',   decode: decodeHex },
+    32: { name: 'invreq_chain',        color: 'var(--color-chains)',     decode: decodeChains },
+    34: { name: 'invreq_amount',       color: 'var(--color-amount)',     decode: decodeAmount },
+    36: { name: 'invreq_features',     color: 'var(--color-features)',   decode: decodeFeatures },
+    38: { name: 'invreq_quantity',     color: 'var(--color-quantity)',   decode: decodeQuantity },
+    40: { name: 'invreq_payer_id',     color: 'var(--color-issuer-id)', decode: decodeHex },
+    42: { name: 'invreq_payer_note',   color: 'var(--color-description)',decode: decodeUtf8 },
+    // Invoice fields
+    160: { name: 'invoice_paths',      color: 'var(--color-paths)',      decode: decodePaths },
+    162: { name: 'invoice_blindedpay', color: 'var(--color-paths)',      decode: decodeHex },
+    164: { name: 'invoice_created_at', color: 'var(--color-expiry)',     decode: decodeExpiry },
+    166: { name: 'invoice_relative_expiry', color: 'var(--color-expiry)', decode: decodeAmount },
+    168: { name: 'invoice_payment_hash', color: 'var(--color-metadata)', decode: decodeHex },
+    170: { name: 'invoice_amount',     color: 'var(--color-amount)',     decode: decodeAmount },
+    172: { name: 'invoice_fallbacks',  color: 'var(--color-paths)',      decode: decodeHex },
+    174: { name: 'invoice_features',   color: 'var(--color-features)',   decode: decodeFeatures },
+    176: { name: 'invoice_node_id',    color: 'var(--color-issuer-id)', decode: decodeHex },
+    // Signature
+    240: { name: 'signature',          color: 'var(--color-metadata)',   decode: decodeHex },
+    // Payer proof fields (experimental, PR #1295)
+    242: { name: 'proof_preimage',     color: 'var(--color-amount)',     decode: decodeHex },
+    244: { name: 'proof_omitted_tlvs', color: 'var(--color-features)',   decode: decodeHex },
+    246: { name: 'proof_missing_hashes', color: 'var(--color-paths)',    decode: decodeHex },
+    248: { name: 'proof_leaf_hashes',  color: 'var(--color-chains)',     decode: decodeHex },
+    250: { name: 'proof_payer_signature', color: 'var(--color-issuer-id)', decode: decodeHex },
   };
 
   // ---- Bech32 helpers ----
@@ -218,14 +245,14 @@
     infoPanel.style.backgroundColor = '';
 
     if (!input || !input.trim()) {
-      display.innerHTML = '<p class="placeholder-text">Paste a BOLT12 offer above to decode it.</p>';
+      display.innerHTML = '<p class="placeholder-text">Paste a BOLT12 string (offer, invoice request, invoice, or payer proof) to decode it.</p>';
       return;
     }
 
     try {
       var decoded = bolt12.decodeBolt12(input.trim());
     } catch (e) {
-      display.innerHTML = '<p class="placeholder-text">Paste a BOLT12 offer above to decode it.</p>';
+      display.innerHTML = '<p class="placeholder-text">Paste a BOLT12 string (offer, invoice request, invoice, or payer proof) to decode it.</p>';
       errorPanel.style.display = 'block';
       errorPanel.textContent = 'Decode error: ' + e.message;
       return;
@@ -236,7 +263,7 @@
     try {
       records = bolt12.parseTlvStream(decoded.data);
     } catch (e) {
-      display.innerHTML = '<p class="placeholder-text">Paste a BOLT12 offer above to decode it.</p>';
+      display.innerHTML = '<p class="placeholder-text">Paste a BOLT12 string (offer, invoice request, invoice, or payer proof) to decode it.</p>';
       errorPanel.style.display = 'block';
       errorPanel.textContent = 'TLV parse error: ' + e.message;
       return;
@@ -244,10 +271,18 @@
 
     // Validate (but don't fail hard - still show what we can)
     var validationError = null;
-    try {
-      bolt12.validateOffer(records);
-    } catch (e) {
-      validationError = e.message;
+    if (decoded.hrp === 'lno') {
+      try {
+        bolt12.validateOffer(records);
+      } catch (e) {
+        validationError = e.message;
+      }
+    } else if (decoded.hrp === 'lnp') {
+      try {
+        bolt12.parsePayerProof(records);
+      } catch (e) {
+        validationError = e.message;
+      }
     }
 
     // Get the bech32 string (normalized lowercase)
