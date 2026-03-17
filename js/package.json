@@ -1,5 +1,5 @@
 {
-  "name": "bolt12-decoder",
+  "name": "bolt12-utils",
   "version": "0.1.0",
   "description": "Pure JS/TS BOLT12 offer encoder/decoder for Lightning Network",
   "main": "dist/index.js",
