@@ -5,9 +5,10 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
+    "generate": "tsx ../tools/generate-ts.ts --spec ../specs/bolt12.csv --output src/generated.ts",
     "build": "tsc",
     "build:web": "esbuild src/index.ts --bundle --format=iife --global-name=bolt12 --outfile=../website/bolt12-bundle.js --platform=browser",
-    "test": "tsx test/offers-test.ts",
+    "test": "tsx test/offers-test.ts && tsx test/payer-proof-test.ts && tsx test/generated-test.ts",
     "test:watch": "tsx --watch test/offers-test.ts"
   },
   "dependencies": {

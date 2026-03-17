@@ -12,6 +12,12 @@ export { readBigSize, writeBigSize } from './bigsize.js';
 export { parseTlvStream, type TlvRecord } from './tlv.js';
 export { computeMerkleRoot, taggedHash, verifySignature } from './merkle.js';
 export { validateOffer } from './offer.js';
+/**
+ * @deprecated Use `extractGeneratedOfferFields` and `GeneratedOfferFields` from
+ * the auto-generated module instead. These hand-written exports use non-spec
+ * field names (e.g. `description` instead of `offer_description`) and only
+ * cover offers — the generated module covers all BOLT12 message types.
+ */
 export {
   extractOfferFields,
   type OfferFields,
@@ -26,6 +32,43 @@ export {
   type CreatePayerProofParams,
   type CreatePayerProofResult,
 } from './payer_proof.js';
+
+// Auto-generated types and extractors from BOLT12 spec CSV
+export {
+  // Offer
+  type OfferFields as GeneratedOfferFields,
+  extractOfferFields as extractGeneratedOfferFields,
+  KNOWN_OFFER_TYPES,
+  OFFER_TLV_NAMES,
+  // Invoice request
+  type InvoiceRequestFields,
+  extractInvoiceRequestFields,
+  KNOWN_INVOICE_REQUEST_TYPES,
+  INVOICE_REQUEST_TLV_NAMES,
+  // Invoice
+  type InvoiceFields,
+  extractInvoiceFields,
+  KNOWN_INVOICE_TYPES,
+  INVOICE_TLV_NAMES,
+  // Invoice error
+  type InvoiceErrorFields,
+  extractInvoiceErrorFields,
+  KNOWN_INVOICE_ERROR_TYPES,
+  INVOICE_ERROR_TLV_NAMES,
+  // Subtypes
+  type BlindedPayinfo,
+  type FallbackAddress,
+  // Constants (all)
+  OFFER_CHAINS, OFFER_METADATA, OFFER_CURRENCY, OFFER_AMOUNT,
+  OFFER_DESCRIPTION, OFFER_FEATURES, OFFER_ABSOLUTE_EXPIRY,
+  OFFER_PATHS, OFFER_ISSUER, OFFER_QUANTITY_MAX, OFFER_ISSUER_ID,
+  INVREQ_METADATA, INVREQ_CHAIN, INVREQ_AMOUNT, INVREQ_FEATURES,
+  INVREQ_QUANTITY, INVREQ_PAYER_ID, INVREQ_PAYER_NOTE, INVREQ_PATHS,
+  INVREQ_BIP_353_NAME, SIGNATURE,
+  INVOICE_PATHS, INVOICE_BLINDEDPAY, INVOICE_CREATED_AT,
+  INVOICE_RELATIVE_EXPIRY, INVOICE_PAYMENT_HASH, INVOICE_AMOUNT,
+  INVOICE_FALLBACKS, INVOICE_FEATURES, INVOICE_NODE_ID,
+} from './generated.js';
 
 import { decodeBolt12, type Bolt12HRP } from './bech32.js';
 import { parseTlvStream, type TlvRecord } from './tlv.js';
