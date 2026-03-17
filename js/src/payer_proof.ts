@@ -179,11 +179,21 @@ export function parsePayerProof(records: TlvRecord[]): PayerProofFields {
   }
 
   // Required fields check
-  if (!payerId) throw new Error('Missing invreq_payer_id');
-  if (!invoicePaymentHash) throw new Error('Missing invoice_payment_hash');
-  if (!invoiceNodeId) throw new Error('Missing invoice_node_id');
-  if (!signature) throw new Error('Missing signature');
-  if (!payerSignatureRaw) throw new Error('Missing payer_signature');
+  if (!payerId) {
+    throw new Error('Missing invreq_payer_id');
+  }
+  if (!invoicePaymentHash) {
+    throw new Error('Missing invoice_payment_hash');
+  }
+  if (!invoiceNodeId) {
+    throw new Error('Missing invoice_node_id');
+  }
+  if (!signature) {
+    throw new Error('Missing signature');
+  }
+  if (!payerSignatureRaw) {
+    throw new Error('Missing payer_signature');
+  }
 
   // Parse omitted_tlvs
   const omittedTlvs = omittedTlvsRaw ? parseBigSizeArray(omittedTlvsRaw) : [];
@@ -314,7 +324,9 @@ function rebuildTreeRecursive(
   missingHashes: Uint8Array[],
   missingIdx: { value: number },
 ): MerkleNode {
-  if (nodes.length === 1) return nodes[0];
+  if (nodes.length === 1) {
+    return nodes[0];
+  }
 
   const split = largestPow2LessThan(nodes.length);
   const leftNodes = nodes.slice(0, split);
@@ -439,8 +451,9 @@ export function verifyPayerProof(proof: PayerProofFields): {
     }
 
     return { valid: true, merkleRoot };
-  } catch (e: any) {
-    return { valid: false, merkleRoot: new Uint8Array(32), error: e.message };
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : String(e);
+    return { valid: false, merkleRoot: new Uint8Array(32), error: message };
   }
 }
 
@@ -484,7 +497,9 @@ function computeOmittedMarkers(
   let nextMarker = 1n;
 
   for (const type of nonSigTypes) {
-    if (type === 0n) continue; // implicit
+    if (type === 0n) {
+      continue; // implicit
+    }
 
     if (includedTypes.has(type)) {
       nextMarker = type + 1n;
@@ -501,7 +516,9 @@ function computeOmittedMarkers(
  * Compute subtree hash for a fully-unknown subtree (creator side).
  */
 function computeSubtreeHash(nodes: MerkleNode[]): Uint8Array {
-  if (nodes.length === 1) return nodes[0].hash;
+  if (nodes.length === 1) {
+    return nodes[0].hash;
+  }
   const split = largestPow2LessThan(nodes.length);
   const left = computeSubtreeHash(nodes.slice(0, split));
   const right = computeSubtreeHash(nodes.slice(split));
@@ -517,7 +534,9 @@ function collectMissingRecursive(
   nodes: MerkleNode[],
   missing: Uint8Array[],
 ): MerkleNode {
-  if (nodes.length === 1) return nodes[0];
+  if (nodes.length === 1) {
+    return nodes[0];
+  }
 
   const split = largestPow2LessThan(nodes.length);
   const leftNodes = nodes.slice(0, split);
@@ -593,10 +612,14 @@ export function createPayerProof(params: CreatePayerProofParams): CreatePayerPro
   // Find required fields
   const nonSigRecords = invoiceRecords.filter(r => !isSignatureType(r.type));
   const sigRecord = invoiceRecords.find(r => r.type === SIGNATURE);
-  if (!sigRecord) throw new Error('Invoice missing signature (type 240)');
+  if (!sigRecord) {
+    throw new Error('Invoice missing signature (type 240)');
+  }
 
   const paymentHashRecord = nonSigRecords.find(r => r.type === INVOICE_PAYMENT_HASH);
-  if (!paymentHashRecord) throw new Error('Invoice missing payment_hash (type 168)');
+  if (!paymentHashRecord) {
+    throw new Error('Invoice missing payment_hash (type 168)');
+  }
 
   // Verify preimage
   const computedHash = sha256(preimage);

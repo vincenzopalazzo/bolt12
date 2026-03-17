@@ -3,13 +3,23 @@
  *
  * Provides a convenient API to access decoded offer fields by name
  * instead of manually searching TLV records by type number.
+ *
+ * @deprecated Use the auto-generated types from `./generated.js` instead.
+ * The generated module provides spec-compliant field names (e.g. `offer_description`
+ * instead of `description`) and covers offer, invoice_request, invoice, and
+ * invoice_error message types. This hand-written module only covers offers.
+ *
+ * Migration:
+ *   import { extractOfferFields, type OfferFields } from './generated.js';
  */
 
 import type { TlvRecord } from './tlv.js';
 
 /** Read a truncated big-endian unsigned integer. */
 function tu64(data: Uint8Array): bigint {
-  if (data.length === 0) return 0n;
+  if (data.length === 0) {
+    return 0n;
+  }
   let val = 0n;
   for (let i = 0; i < data.length; i++) {
     val = (val << 8n) | BigInt(data[i]);
@@ -25,7 +35,10 @@ function toHex(buf: Uint8Array): string {
   return hex;
 }
 
-/** Parsed chain hash with known name. */
+/**
+ * Parsed chain hash with known name.
+ * @deprecated Use `Uint8Array[]` from generated `OfferFields.offer_chains` instead.
+ */
 export interface Chain {
   hash: string;
   name: string;
@@ -46,7 +59,10 @@ function parseChains(data: Uint8Array): Chain[] {
   return chains;
 }
 
-/** Typed offer fields extracted from TLV records. */
+/**
+ * Typed offer fields extracted from TLV records.
+ * @deprecated Use `GeneratedOfferFields` from `./generated.js` instead.
+ */
 export interface OfferFields {
   /** Chain hashes this offer is valid for (default: bitcoin mainnet). */
   chains?: Chain[];
@@ -78,6 +94,7 @@ export interface OfferFields {
 
 /**
  * Extract typed fields from offer TLV records.
+ * @deprecated Use `extractOfferFields` from `./generated.js` instead.
  */
 export function extractOfferFields(records: TlvRecord[]): OfferFields {
   const fields: OfferFields = {

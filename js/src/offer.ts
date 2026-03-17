@@ -55,8 +55,12 @@ const KNOWN_OFFER_TYPES = new Set([
  * Offers may contain types 1-79 and 1000000000-1999999999.
  */
 function isValidOfferType(type: bigint): boolean {
-  if (type >= 1n && type <= 79n) return true;
-  if (type >= 1000000000n && type <= 1999999999n) return true;
+  if (type >= 1n && type <= 79n) {
+    return true;
+  }
+  if (type >= 1000000000n && type <= 1999999999n) {
+    return true;
+  }
   return false;
 }
 
@@ -204,7 +208,9 @@ function validateBlindedPaths(data: Uint8Array): void {
 function validateFeatures(data: Uint8Array): void {
   for (let byteIdx = 0; byteIdx < data.length; byteIdx++) {
     const byte = data[byteIdx];
-    if (byte === 0) continue;
+    if (byte === 0) {
+      continue;
+    }
 
     // Position from the right (LSB of last byte = bit 0)
     const bitOffset = (data.length - 1 - byteIdx) * 8;

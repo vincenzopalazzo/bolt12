@@ -93,7 +93,9 @@ export function decodeBolt12(input: string): Bolt12Decoded {
   while (i < input.length) {
     if (input[i] === '+') {
       // The character before '+' must be a valid bech32 char
-      if (i === 0) throw new Error('Invalid "+" at start');
+      if (i === 0) {
+        throw new Error('Invalid "+" at start');
+      }
       const prevChar = str[str.length - 1].toLowerCase();
       if (!(prevChar in ALPHABET_MAP)) {
         throw new Error('Invalid character before "+"');
