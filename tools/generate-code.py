@@ -143,7 +143,7 @@ def generate_fromwire_field(field, allfields, lang):
                           ftype=field.fieldtype.underlying_type.name),
                   file=ofile)
         elif lang == 'py':
-            print('    lenfield_{fname} = fromwire_{ftype}(buffer)'
+            print('    lenfield_{fname}, buffer = fromwire_{ftype}(buffer)'
                   .format(fname=field.name,
                           ftype=field.fieldtype.underlying_type.name),
                   file=ofile)
