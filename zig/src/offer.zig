@@ -97,7 +97,7 @@ fn validateUtf8(data: []const u8) OfferError!void {
     }
 }
 
-/// Validate a compressed public key (33 bytes, starts with 02 or 03).
+/// Validate a compressed public key (33 bytes, valid point on secp256k1).
 fn validatePoint(data: []const u8) OfferError!void {
     if (data.len != 33) {
         return OfferError.InvalidPoint;
@@ -105,8 +105,10 @@ fn validatePoint(data: []const u8) OfferError!void {
     if (data[0] != 0x02 and data[0] != 0x03) {
         return OfferError.InvalidPoint;
     }
-    // Note: full secp256k1 point-on-curve validation would require a crypto library.
-    // For now, we validate the basic format constraints.
+    // Full secp256k1 point-on-curve validation using std.crypto
+    _ = std.crypto.ecc.Secp256k1.fromSec1(data) catch {
+        return OfferError.InvalidPoint;
+    };
 }
 
 /// Validate offer_chains field: must be a multiple of 32 bytes, and non-empty.
@@ -300,14 +302,16 @@ pub fn validateOffer(records: []const tlv.TlvRecord) OfferError!ValidatedOffer {
 
 const testing = std.testing;
 
-test "offer: validate minimal offer (issuer_id only)" {
-    // type=22, length=33, value=02+32 bytes
-    var value: [33]u8 = undefined;
-    value[0] = 0x02;
-    @memset(value[1..], 0xee);
+// Valid secp256k1 pubkey from the BOLT12 test vectors
+const TEST_PUBKEY = [33]u8{
+    0x02, 0xee, 0xc7, 0x24, 0x5d, 0x6b, 0x7d, 0x2c, 0xcb, 0x30, 0x38, 0x0b, 0xfb, 0xe2, 0xa3, 0x64,
+    0x8c, 0xd7, 0xa9, 0x42, 0x65, 0x3f, 0x5a, 0xa3, 0x40, 0xed, 0xce, 0xa1, 0xf2, 0x83, 0x68, 0x66,
+    0x19,
+};
 
+test "offer: validate minimal offer (issuer_id only)" {
     const records = [_]tlv.TlvRecord{
-        .{ .tlv_type = 22, .length = 33, .value = &value },
+        .{ .tlv_type = 22, .length = 33, .value = &TEST_PUBKEY },
     };
 
     const validated = try validateOffer(&records);
@@ -317,13 +321,9 @@ test "offer: validate minimal offer (issuer_id only)" {
 }
 
 test "offer: validate offer with description" {
-    var pubkey: [33]u8 = undefined;
-    pubkey[0] = 0x03;
-    @memset(pubkey[1..], 0xaa);
-
     const records = [_]tlv.TlvRecord{
         .{ .tlv_type = 10, .length = 12, .value = "Test vectors" },
-        .{ .tlv_type = 22, .length = 33, .value = &pubkey },
+        .{ .tlv_type = 22, .length = 33, .value = &TEST_PUBKEY },
     };
 
     const validated = try validateOffer(&records);
@@ -340,27 +340,19 @@ test "offer: reject missing issuer_id and paths" {
 }
 
 test "offer: reject amount without description" {
-    var pubkey: [33]u8 = undefined;
-    pubkey[0] = 0x02;
-    @memset(pubkey[1..], 0xbb);
-
     const records = [_]tlv.TlvRecord{
         .{ .tlv_type = 8, .length = 1, .value = &[_]u8{0x64} }, // amount=100
-        .{ .tlv_type = 22, .length = 33, .value = &pubkey },
+        .{ .tlv_type = 22, .length = 33, .value = &TEST_PUBKEY },
     };
 
     try testing.expectError(OfferError.MissingDescriptionWithAmount, validateOffer(&records));
 }
 
 test "offer: reject currency without amount" {
-    var pubkey: [33]u8 = undefined;
-    pubkey[0] = 0x02;
-    @memset(pubkey[1..], 0xcc);
-
     const records = [_]tlv.TlvRecord{
         .{ .tlv_type = 6, .length = 3, .value = "USD" },
         .{ .tlv_type = 10, .length = 4, .value = "test" },
-        .{ .tlv_type = 22, .length = 33, .value = &pubkey },
+        .{ .tlv_type = 22, .length = 33, .value = &TEST_PUBKEY },
     };
 
     try testing.expectError(OfferError.MissingAmountWithCurrency, validateOffer(&records));
@@ -375,12 +367,8 @@ test "offer: reject invalid point" {
 }
 
 test "offer: reject type outside offer range" {
-    var pubkey: [33]u8 = undefined;
-    pubkey[0] = 0x02;
-    @memset(pubkey[1..], 0xdd);
-
     const records = [_]tlv.TlvRecord{
-        .{ .tlv_type = 22, .length = 33, .value = &pubkey },
+        .{ .tlv_type = 22, .length = 33, .value = &TEST_PUBKEY },
         .{ .tlv_type = 240, .length = 1, .value = &[_]u8{0x00} },
     };
 
