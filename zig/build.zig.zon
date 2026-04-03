@@ -1,0 +1,11 @@
+.{
+    .name = .bolt12,
+    .version = "0.1.0",
+    .fingerprint = 0xc31e316b794dd2a9,
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+    .dependencies = .{},
+}
