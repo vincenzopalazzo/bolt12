@@ -1,0 +1,47 @@
+{
+  "name": "bolt12-utils",
+  "version": "0.1.1",
+  "description": "Pure JS/TS BOLT12 utilities for Lightning Network — decode, validate, sign, and verify offers, invoices, and payer proofs",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "!src/**/*.test.*"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vincenzopalazzo/bolt12.git",
+    "directory": "js"
+  },
+  "keywords": [
+    "bolt12",
+    "lightning",
+    "bitcoin",
+    "offer",
+    "invoice",
+    "tlv",
+    "bech32",
+    "schnorr"
+  ],
+  "author": "Vincenzo Palazzo",
+  "scripts": {
+    "prepublishOnly": "npm run build",
+    "generate": "tsx ../tools/generate-ts.ts --spec ../specs/bolt12.csv --output src/generated.ts",
+    "build": "tsc",
+    "build:web": "esbuild src/index.ts --bundle --format=iife --global-name=bolt12 --outfile=../website/bolt12-bundle.js --platform=browser",
+    "test": "tsx test/offers-test.ts && tsx test/payer-proof-test.ts && tsx test/generated-test.ts && tsx test/verify-test.ts",
+    "test:watch": "tsx --watch test/offers-test.ts"
+  },
+  "dependencies": {
+    "@noble/curves": "^1.8.1",
+    "@noble/hashes": "^1.7.1"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "esbuild": "^0.27.4",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  },
+  "license": "MIT"
+}
