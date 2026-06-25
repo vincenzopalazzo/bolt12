@@ -50,6 +50,9 @@ const SIGNATURE = 240n;
 const LOW_MARKER_MAX = 239n;
 const HIGH_MARKER_MIN = 1_000_000_000n;
 const HIGH_MARKER_MAX = 3_999_999_999n;
+// Payer-proof data range (PAYER_PROOF_DATA_TYPES): 1001..=999_999_999. The only
+// defined types here are the known proof fields 1001..=1005.
+const PP_DATA_RANGE_MIN = 1001n;
 
 // Required TLV types that must always be included in a payer proof
 const REQUIRED_TYPES = new Set([INVREQ_PAYER_ID, INVOICE_PAYMENT_HASH, INVOICE_NODE_ID]);
@@ -186,8 +189,21 @@ export function parsePayerProof(records: TlvRecord[]): PayerProofFields {
       leafHashesRaw = record.value;
     } else if (type === PP_NOTE) {
       proofNoteRaw = record.value;
-    } else if (!isSignatureType(type)) {
-      // Non-signature, non-payer-proof field -> included invoice record
+    } else if (type >= PP_DATA_RANGE_MIN && type < HIGH_MARKER_MIN) {
+      // Unknown TLV in the payer-proof data range (the known proof fields
+      // 1001..=1005 are matched above). Per the BOLT "it's ok to be odd" rule,
+      // an unknown even type is mandatory and MUST be rejected; an unknown odd
+      // type is ignorable. Either way it is not an invoice field, so it is not
+      // reconstructed as an invoice leaf (it stays committed by proof_signature).
+      if (type % 2n === 0n) {
+        throw new Error(`Payer proof contains unknown even TLV type ${type} in the proof data range`);
+      }
+    } else if (isIncludedInvoiceType(type)) {
+      // Genuine invoice field. Types in the signature range (240..=1000) and
+      // the payer-proof data range (1001..=999_999_999) are proof-container
+      // types, not invoice leaves, so they are excluded here (matching the
+      // reference implementation). Unknown ignorable (odd) TLVs in the data
+      // range are tolerated rather than mis-counted as invoice fields.
       includedRecords.push(record);
     }
   }
@@ -324,6 +340,20 @@ function validateOmittedTlvs(omittedTlvs: bigint[], includedRecords: TlvRecord[]
 function isAllowedOmittedMarker(marker: bigint): boolean {
   return (marker >= 1n && marker <= LOW_MARKER_MAX) ||
     (marker >= HIGH_MARKER_MIN && marker <= HIGH_MARKER_MAX);
+}
+
+/**
+ * Whether a TLV type is a genuine invoice field (and thus an invoice merkle
+ * leaf), as opposed to a proof-container type.
+ *
+ * Invoice fields live in the normal range (< 240) or the experimental range
+ * (>= 1_000_000_000). The signature range (240..=1000) and the payer-proof
+ * data range (1001..=999_999_999) are proof-container types and MUST NOT be
+ * reconstructed as invoice leaves. Mirrors rust-lightning's `tlv_stream_iter`,
+ * which strips both SIGNATURE_TYPES and PAYER_PROOF_DATA_TYPES.
+ */
+function isIncludedInvoiceType(type: bigint): boolean {
+  return type < SIGNATURE || type >= HIGH_MARKER_MIN;
 }
 
 function nextMarker(value: bigint): bigint {
