@@ -14,6 +14,8 @@ import {
   PP_PROOF_SIGNATURE,
   PP_OMITTED_TLVS,
 } from '../src/payer_proof.js';
+import { computeMerkleRoot, taggedHash } from '../src/merkle.js';
+import { schnorr } from '@noble/curves/secp256k1';
 
 function toHex(buf: Uint8Array): string {
   let hex = '';
@@ -243,6 +245,63 @@ test('omitted markers jump from 239 to 1000000000', () => {
     { type: 1003n, length: 0n, value: new Uint8Array(0) },
     { type: 1004n, length: BigInt(records.length * 32), value: new Uint8Array(records.length * 32) },
   ]);
+});
+
+// Build a valid full_disclosure proof, inject an extra TLV in the proof stream,
+// and re-sign proof_signature over it so the extension is legitimately committed
+// (as a future proof writer would). Returns the encoded proof bytes.
+function signedProofWithExtraTlv(extra: TlvRecord): Uint8Array {
+  const full = vectors.valid_vectors.find(v => v.name === 'full_disclosure');
+  assert(full !== undefined, 'full_disclosure vector missing');
+
+  const includedTlvTypes = full.input.invoice_fields
+    .filter(field => field.included)
+    .map(field => field.type);
+  const base = createPayerProof({
+    invoiceHex: full.input.invoice_hex,
+    preimageHex: full.input.preimage,
+    payerSecretKeyHex: vectors.payer_secret,
+    includedTlvTypes,
+  });
+
+  const recordsNoSig = parseTlvStream(fromHex(base.proofHex))
+    .filter(record => record.type !== PP_PROOF_SIGNATURE);
+  const augmented = [...recordsNoSig, extra].sort((a, b) => Number(a.type - b.type));
+
+  const proofRoot = computeMerkleRoot(augmented);
+  const tag = new TextEncoder().encode('lightningpayer_proofproof_signature');
+  const sig = schnorr.sign(taggedHash(tag, proofRoot), fromHex(vectors.payer_secret));
+  const withSig = [
+    ...augmented,
+    { type: PP_PROOF_SIGNATURE, length: 64n, value: sig },
+  ].sort((a, b) => Number(a.type - b.type));
+  return concatBytes(...withSig.map(serializeTlvRecord));
+}
+
+// "It's ok to be odd": an unknown ODD TLV in the payer-proof data range
+// (1001..=999_999_999) is ignorable. It must NOT be treated as an invoice field
+// (rust-lightning's `tlv_stream_iter` strips the whole data range from the
+// invoice merkle tree), so a proof that carries it and signs over it still
+// verifies. Without the fix, the stray TLV was counted as an invoice leaf and
+// the proof was wrongly rejected on the leaf-hash count.
+test('tolerates unknown odd data-range TLV (reference parity)', () => {
+  const proofBytes = signedProofWithExtraTlv({ type: 1007n, length: 3n, value: new Uint8Array([1, 2, 3]) });
+  const verification = verifyPayerProof(parsePayerProof(parseTlvStream(proofBytes)));
+  assert(verification.valid, `forward-compat (odd) proof must verify: ${verification.error}`);
+});
+
+// An unknown EVEN TLV in the data range is mandatory under the BOLT TLV rule and
+// MUST be rejected even when the proof_signature commits to it (reproduced with
+// type 1006). The known proof fields 1001..=1005 are handled separately.
+test('rejects unknown even data-range TLV (it is ok to be odd)', () => {
+  const proofBytes = signedProofWithExtraTlv({ type: 1006n, length: 3n, value: new Uint8Array([1, 2, 3]) });
+  let accepted = false;
+  try {
+    accepted = verifyPayerProof(parsePayerProof(parseTlvStream(proofBytes))).valid;
+  } catch {
+    accepted = false;
+  }
+  assert(!accepted, 'unknown even data-range TLV (1006) must be rejected');
 });
 
 console.log(`\n${'='.repeat(60)}`);
