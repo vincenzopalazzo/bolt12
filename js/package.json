@@ -1,6 +1,6 @@
 {
   "name": "bolt12-utils",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Pure JS/TS BOLT12 utilities for Lightning Network — decode, validate, sign, and verify offers, invoices, and payer proofs",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
